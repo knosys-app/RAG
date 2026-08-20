@@ -1,0 +1,27 @@
+{
+  "name": "@knosys-rag/engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@knosys-rag/answering": "workspace:*",
+    "@knosys-rag/core": "workspace:*",
+    "@knosys-rag/inference": "workspace:*",
+    "@knosys-rag/ingestion": "workspace:*",
+    "@knosys-rag/retrieval": "workspace:*",
+    "@knosys-rag/storage-sqlite": "workspace:*",
+    "sqlite-vec": "0.1.9"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

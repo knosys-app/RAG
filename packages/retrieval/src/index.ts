@@ -1,0 +1,35 @@
+export {
+  DEFAULT_CANDIDATE_POOL_SIZE,
+  DEFAULT_RRF_K,
+  reciprocalRankFusion,
+  type ReciprocalRankFusionOptions,
+  type RetrievalPools,
+} from "./fusion.js";
+export {
+  HybridRetriever,
+  RetrievalUnavailableError,
+  type HybridRetrieverOptions,
+} from "./hybrid-retriever.js";
+export {
+  RETRIEVAL_TRACE_VERSION,
+  type LexicalRetrievalRequest,
+  type LexicalRetriever,
+  type QueryEmbedder,
+  type RequestedRetrievalMode,
+  type RetrievalCandidate,
+  type RetrievalComponent,
+  type RetrievalComponentScore,
+  type RetrievalEvidence,
+  type RetrievalMode,
+  type RetrievalPoolCandidate,
+  type RetrievalRequest,
+  type RetrievalResult,
+  type RetrievalStageStatus,
+  type RetrievalStageTrace,
+  type RetrievalTrace,
+  type RetrievalTraceVersion,
+  type SourceLocator,
+  type SourceRange,
+  type VectorRetrievalRequest,
+  type VectorRetriever,
+} from "./types.js";

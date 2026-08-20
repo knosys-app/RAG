@@ -1,0 +1,32 @@
+{
+  "name": "@knosys-rag/ingestion",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@knosys-rag/core": "workspace:*",
+    "@napi-rs/canvas": "1.0.6",
+    "@stll/folio-core": "0.17.0",
+    "fast-xml-parser": "5.10.1",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-to-string": "^4.0.0",
+    "parse5": "^8.0.0",
+    "pdfjs-dist": "6.2.108",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^24.10.1",
+    "@types/yauzl": "3.4.0",
+    "fflate": "0.8.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

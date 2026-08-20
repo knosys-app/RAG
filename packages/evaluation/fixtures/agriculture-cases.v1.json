@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "caseSetId": "synthetic-agriculture-cases-v1",
+  "corpusId": "synthetic-agriculture-v1",
+  "cases": [
+    {
+      "caseId": "exact-irrigation-rate",
+      "query": "How much water should tomatoes receive each week while fruiting?",
+      "tags": ["exact-numeric"],
+      "expectation": {
+        "type": "answerable",
+        "acceptableAnswers": ["25 millimetres per week"],
+        "evidence": [
+          {
+            "sourceId": "irrigation-guide",
+            "sourceChecksum": "33bd7d525a4843e358640ba0fc4b0b1b565fbdd1b594c67698c2f10be7744d69",
+            "locator": {
+              "type": "lines",
+              "startLine": 1,
+              "endLine": 1
+            },
+            "quote": "Tomato irrigation should provide 25 millimetres of water per week during fruiting.",
+            "quoteHash": "c5bfa7e1459640e770bf0528434c6db1076cb35c28ef8c294cf6beff4e2e5ed4"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "semantic-living-roots",
+      "query": "What soil benefits come from maintaining plants between harvests?",
+      "tags": ["semantic-paraphrase"],
+      "expectation": {
+        "type": "answerable",
+        "acceptableAnswers": ["Living roots improve soil structure and reduce erosion."],
+        "evidence": [
+          {
+            "sourceId": "soil-health-notes",
+            "sourceChecksum": "0a816f150475174ca96df183eb46f5fb09fc7aabed853d7fc1bcab4a9f336b47",
+            "locator": {
+              "type": "fragment",
+              "fragment": "#living-roots"
+            },
+            "quote": "Keeping living roots in the ground improves soil structure and reduces erosion.",
+            "quoteHash": "f97bb052f4c9e51115193b6111f072fdffd58a3d42061d9816628fb4904e2238"
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "unanswerable-pesticide-interval",
+      "query": "How many days after spraying FieldGuard may tomatoes be harvested?",
+      "tags": ["unanswerable"],
+      "expectation": {
+        "type": "unanswerable"
+      }
+    }
+  ]
+}
