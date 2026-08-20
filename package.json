@@ -1,0 +1,30 @@
+{
+  "name": "knosys-rag",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A local-first desktop knowledge library with grounded answers.",
+  "type": "module",
+  "packageManager": "pnpm@10.22.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @knosys-rag/desktop build",
+    "dev": "pnpm --filter @knosys-rag/desktop dev",
+    "eval:ci": "pnpm --filter @knosys-rag/evaluation run ci",
+    "eval:deterministic": "pnpm --filter @knosys-rag/evaluation run evaluate",
+    "eval:grounding:live": "pnpm --filter @knosys-rag/evaluation run evaluate:grounding",
+    "eval:live": "pnpm --filter @knosys-rag/evaluation run evaluate:live",
+    "lint": "eslint .",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0"
+  }
+}

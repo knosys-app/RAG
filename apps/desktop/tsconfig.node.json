@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2023", "DOM"],
+    "types": ["node", "electron-vite/node", "vitest/globals"]
+  },
+  "include": ["electron.vite.config.ts", "src/engine", "src/main", "src/preload"]
+}

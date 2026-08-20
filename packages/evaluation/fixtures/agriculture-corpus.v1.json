@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "synthetic-agriculture-v1",
+  "sources": [
+    {
+      "sourceId": "irrigation-guide",
+      "checksum": "33bd7d525a4843e358640ba0fc4b0b1b565fbdd1b594c67698c2f10be7744d69",
+      "mediaType": "text/plain",
+      "title": "Irrigation Guide",
+      "text": "Tomato irrigation should provide 25 millimetres of water per week during fruiting.\nApply water early in the morning to reduce evaporation."
+    },
+    {
+      "sourceId": "soil-health-notes",
+      "checksum": "0a816f150475174ca96df183eb46f5fb09fc7aabed853d7fc1bcab4a9f336b47",
+      "mediaType": "text/markdown",
+      "title": "Soil Health Notes",
+      "text": "Cover crops protect bare soil after harvest.\nKeeping living roots in the ground improves soil structure and reduces erosion."
+    }
+  ]
+}

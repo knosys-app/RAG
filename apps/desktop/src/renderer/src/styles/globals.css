@@ -1,0 +1,414 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Dark-first theme in the T3 register: plum/graphite surfaces with a violet
+ * accent. `.dark` on <html> selects it; bare :root carries the light mirror.
+ */
+:root {
+  --radius: 0.625rem;
+  --background: oklch(0.985 0.004 300);
+  --foreground: oklch(0.24 0.02 300);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.24 0.02 300);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.24 0.02 300);
+  --primary: oklch(0.54 0.21 305);
+  --primary-foreground: oklch(0.985 0.005 300);
+  --secondary: oklch(0.95 0.008 300);
+  --secondary-foreground: oklch(0.3 0.02 300);
+  --muted: oklch(0.955 0.006 300);
+  --muted-foreground: oklch(0.5 0.02 300);
+  --accent: oklch(0.94 0.018 305);
+  --accent-foreground: oklch(0.3 0.03 305);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(0.985 0.005 300);
+  --border: oklch(0.905 0.01 300);
+  --input: oklch(0.885 0.01 300);
+  --ring: oklch(0.54 0.21 305);
+  --sidebar: oklch(0.962 0.007 300);
+  --sidebar-foreground: oklch(0.3 0.02 300);
+  --sidebar-primary: oklch(0.54 0.21 305);
+  --sidebar-primary-foreground: oklch(0.985 0.005 300);
+  --sidebar-accent: oklch(0.915 0.012 302);
+  --sidebar-accent-foreground: oklch(0.28 0.03 305);
+  --sidebar-border: oklch(0.89 0.01 300);
+  --sidebar-ring: oklch(0.54 0.21 305);
+  --hljs-comment: oklch(0.52 0.02 300);
+  --hljs-keyword: oklch(0.5 0.2 305);
+  --hljs-string: oklch(0.5 0.12 150);
+  --hljs-literal: oklch(0.5 0.14 240);
+  --hljs-title: oklch(0.45 0.14 250);
+  --hljs-attr: oklch(0.5 0.12 60);
+}
+
+.dark {
+  --background: oklch(0.17 0.015 300);
+  --foreground: oklch(0.92 0.01 300);
+  --card: oklch(0.205 0.017 300);
+  --card-foreground: oklch(0.92 0.01 300);
+  --popover: oklch(0.215 0.018 300);
+  --popover-foreground: oklch(0.92 0.01 300);
+  --primary: oklch(0.66 0.19 305);
+  --primary-foreground: oklch(0.145 0.02 305);
+  --secondary: oklch(0.26 0.02 300);
+  --secondary-foreground: oklch(0.92 0.01 300);
+  --muted: oklch(0.24 0.016 300);
+  --muted-foreground: oklch(0.68 0.02 300);
+  --accent: oklch(0.29 0.035 305);
+  --accent-foreground: oklch(0.94 0.015 305);
+  --destructive: oklch(0.62 0.19 25);
+  --destructive-foreground: oklch(0.97 0.01 25);
+  --border: oklch(0.29 0.02 300);
+  --input: oklch(0.31 0.02 300);
+  --ring: oklch(0.66 0.19 305);
+  --sidebar: oklch(0.14 0.014 300);
+  --sidebar-foreground: oklch(0.88 0.012 300);
+  --sidebar-primary: oklch(0.66 0.19 305);
+  --sidebar-primary-foreground: oklch(0.145 0.02 305);
+  --sidebar-accent: oklch(0.225 0.02 302);
+  --sidebar-accent-foreground: oklch(0.94 0.015 305);
+  --sidebar-border: oklch(0.235 0.018 300);
+  --sidebar-ring: oklch(0.66 0.19 305);
+  --hljs-comment: oklch(0.62 0.02 300);
+  --hljs-keyword: oklch(0.75 0.15 305);
+  --hljs-string: oklch(0.78 0.12 150);
+  --hljs-literal: oklch(0.75 0.12 240);
+  --hljs-title: oklch(0.78 0.1 250);
+  --hljs-attr: oklch(0.8 0.11 75);
+}
+
+/*
+ * Accent presets. Violet is the default palette above; each preset re-tunes
+ * only the hue-carrying tokens, in both light (bare selector) and dark modes.
+ * Applied via data-accent on <html>; all values are build-time CSS (CSP-safe).
+ */
+[data-accent="coral"] {
+  --primary: oklch(0.55 0.16 35);
+  --ring: oklch(0.55 0.16 35);
+  --accent: oklch(0.94 0.02 35);
+  --accent-foreground: oklch(0.32 0.05 35);
+  --sidebar-primary: oklch(0.55 0.16 35);
+  --sidebar-accent: oklch(0.915 0.016 35);
+  --sidebar-accent-foreground: oklch(0.3 0.05 35);
+  --sidebar-ring: oklch(0.55 0.16 35);
+  --hljs-keyword: oklch(0.52 0.16 35);
+}
+.dark[data-accent="coral"] {
+  --primary: oklch(0.7 0.15 35);
+  --primary-foreground: oklch(0.16 0.03 35);
+  --ring: oklch(0.7 0.15 35);
+  --accent: oklch(0.29 0.04 35);
+  --accent-foreground: oklch(0.94 0.02 35);
+  --sidebar-primary: oklch(0.7 0.15 35);
+  --sidebar-primary-foreground: oklch(0.16 0.03 35);
+  --sidebar-accent: oklch(0.225 0.025 35);
+  --sidebar-accent-foreground: oklch(0.94 0.02 35);
+  --sidebar-ring: oklch(0.7 0.15 35);
+  --hljs-keyword: oklch(0.76 0.13 35);
+}
+
+[data-accent="blue"] {
+  --primary: oklch(0.52 0.18 250);
+  --ring: oklch(0.52 0.18 250);
+  --accent: oklch(0.94 0.02 250);
+  --accent-foreground: oklch(0.3 0.06 250);
+  --sidebar-primary: oklch(0.52 0.18 250);
+  --sidebar-accent: oklch(0.915 0.016 250);
+  --sidebar-accent-foreground: oklch(0.28 0.06 250);
+  --sidebar-ring: oklch(0.52 0.18 250);
+  --hljs-keyword: oklch(0.5 0.17 250);
+}
+.dark[data-accent="blue"] {
+  --primary: oklch(0.68 0.15 250);
+  --primary-foreground: oklch(0.15 0.03 250);
+  --ring: oklch(0.68 0.15 250);
+  --accent: oklch(0.28 0.05 250);
+  --accent-foreground: oklch(0.94 0.02 250);
+  --sidebar-primary: oklch(0.68 0.15 250);
+  --sidebar-primary-foreground: oklch(0.15 0.03 250);
+  --sidebar-accent: oklch(0.225 0.03 250);
+  --sidebar-accent-foreground: oklch(0.94 0.02 250);
+  --sidebar-ring: oklch(0.68 0.15 250);
+  --hljs-keyword: oklch(0.74 0.13 250);
+}
+
+[data-accent="green"] {
+  --primary: oklch(0.5 0.14 155);
+  --ring: oklch(0.5 0.14 155);
+  --accent: oklch(0.94 0.02 155);
+  --accent-foreground: oklch(0.3 0.05 155);
+  --sidebar-primary: oklch(0.5 0.14 155);
+  --sidebar-accent: oklch(0.915 0.016 155);
+  --sidebar-accent-foreground: oklch(0.28 0.05 155);
+  --sidebar-ring: oklch(0.5 0.14 155);
+  --hljs-keyword: oklch(0.48 0.13 155);
+}
+.dark[data-accent="green"] {
+  --primary: oklch(0.7 0.14 155);
+  --primary-foreground: oklch(0.16 0.03 155);
+  --ring: oklch(0.7 0.14 155);
+  --accent: oklch(0.28 0.04 155);
+  --accent-foreground: oklch(0.94 0.02 155);
+  --sidebar-primary: oklch(0.7 0.14 155);
+  --sidebar-primary-foreground: oklch(0.16 0.03 155);
+  --sidebar-accent: oklch(0.225 0.025 155);
+  --sidebar-accent-foreground: oklch(0.94 0.02 155);
+  --sidebar-ring: oklch(0.7 0.14 155);
+  --hljs-keyword: oklch(0.76 0.12 155);
+}
+
+[data-accent="rose"] {
+  --primary: oklch(0.56 0.19 10);
+  --ring: oklch(0.56 0.19 10);
+  --accent: oklch(0.94 0.02 10);
+  --accent-foreground: oklch(0.32 0.06 10);
+  --sidebar-primary: oklch(0.56 0.19 10);
+  --sidebar-accent: oklch(0.915 0.016 10);
+  --sidebar-accent-foreground: oklch(0.3 0.06 10);
+  --sidebar-ring: oklch(0.56 0.19 10);
+  --hljs-keyword: oklch(0.54 0.18 10);
+}
+.dark[data-accent="rose"] {
+  --primary: oklch(0.7 0.16 10);
+  --primary-foreground: oklch(0.16 0.03 10);
+  --ring: oklch(0.7 0.16 10);
+  --accent: oklch(0.29 0.05 10);
+  --accent-foreground: oklch(0.94 0.02 10);
+  --sidebar-primary: oklch(0.7 0.16 10);
+  --sidebar-primary-foreground: oklch(0.16 0.03 10);
+  --sidebar-accent: oklch(0.23 0.03 10);
+  --sidebar-accent-foreground: oklch(0.94 0.02 10);
+  --sidebar-ring: oklch(0.7 0.16 10);
+  --hljs-keyword: oklch(0.76 0.14 10);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: "IBM Plex Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk Variable", "IBM Plex Sans Variable", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    outline-color: color-mix(in oklab, var(--color-ring) 50%, transparent);
+  }
+  /* The frameless (hiddenInset) window is dragged via this region. */
+  .app-drag-region {
+    -webkit-app-region: drag;
+  }
+  .app-no-drag {
+    -webkit-app-region: no-drag;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+}
+
+/* Compact typography for rendered chat markdown. */
+.markdown {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown table,
+.markdown .group {
+  margin-block: 0.65em;
+}
+.markdown ul,
+.markdown ol {
+  padding-inline-start: 1.4em;
+}
+.markdown ul {
+  list-style: disc;
+}
+.markdown ol {
+  list-style: decimal;
+}
+.markdown li {
+  margin-block: 0.2em;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.3;
+  margin-block: 1em 0.4em;
+}
+.markdown h1 {
+  font-size: 1.25em;
+}
+.markdown h2 {
+  font-size: 1.15em;
+}
+.markdown h3 {
+  font-size: 1.05em;
+}
+.markdown h4 {
+  font-size: 1em;
+}
+.markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown blockquote {
+  border-inline-start: 3px solid var(--border);
+  color: var(--muted-foreground);
+  padding-inline-start: 0.9em;
+}
+.markdown code {
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+  border-radius: 0.3em;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.12em 0.35em;
+}
+.markdown pre code {
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+  padding: 0;
+}
+.markdown table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 0.35em 0.7em;
+  text-align: start;
+}
+.markdown th {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  font-weight: 600;
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin-block: 1.2em;
+}
+
+/*
+ * Class-based highlight.js token colors (rehype-highlight). Colors come from
+ * theme variables so both modes stay consistent without inline styles, which
+ * the production CSP would reject.
+ */
+.hljs {
+  color: var(--foreground);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-tag,
+.hljs-name,
+.hljs-meta {
+  color: var(--hljs-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--hljs-string);
+}
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-built_in {
+  color: var(--hljs-literal);
+}
+.hljs-title,
+.hljs-section,
+.hljs-function,
+.hljs-class {
+  color: var(--hljs-title);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-params,
+.hljs-deletion {
+  color: var(--hljs-attr);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
