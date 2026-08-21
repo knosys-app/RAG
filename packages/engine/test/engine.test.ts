@@ -977,7 +977,7 @@ describe("production RAG orchestration", () => {
     });
     expect(
       secondCompleted.message.routingDiagnostics?.confidence.fingerprint,
-    ).toContain("context-standalone-question-v1");
+    ).toContain("context-standalone-question-v2");
     const storedFollowUp = engine
       .getChatThread(firstCompleted.message.threadId)
       .messages.find((message) => message.ordinal === 2);
