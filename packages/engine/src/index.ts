@@ -154,6 +154,7 @@ export type EngineOperationErrorCode =
   | "EVIDENCE_NOT_FOUND"
   | "INTERNAL_ERROR"
   | "INVALID_REQUEST"
+  | "MEMORY_FACT_NOT_FOUND"
   | "RAG_EMBEDDING_UNAVAILABLE"
   | "RAG_GENERATION_MODEL_NOT_CAPABLE"
   | "RAG_GENERATION_MODEL_NOT_INSTALLED"
@@ -411,6 +412,23 @@ export interface RecalledThreadMemory {
 export interface RecalledMemoryContext {
   readonly memories: readonly RecalledThreadMemory[];
   readonly userFacts: readonly string[];
+}
+
+export interface RagUserFact {
+  readonly category: "preference" | "profile" | "project" | "other";
+  readonly createdAt: string;
+  readonly fact: string;
+  readonly id: string;
+  readonly origin: "extracted" | "user";
+  readonly sourceThreadId: string | null;
+  readonly updatedAt: string;
+}
+
+export interface RagMemoryStatus {
+  readonly excludedThreadCount: number;
+  readonly factCount: number;
+  readonly staleThreadCount: number;
+  readonly summarizedThreadCount: number;
 }
 
 export interface RagChatFolder {
@@ -1472,6 +1490,61 @@ export class KnowledgeEngine {
     // A re-included thread becomes summarizable again right away.
     if (!excluded) this.#startMemoryMaintenance();
     return toThreadSummary(summary);
+  }
+
+  public listUserFacts(): readonly RagUserFact[] {
+    this.#assertOpen();
+    return this.#database.listUserFacts().map((fact) => ({ ...fact }));
+  }
+
+  public updateUserFact(factId: string, fact: string): RagUserFact {
+    this.#assertOpen();
+    if (factId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A fact ID is required.");
+    }
+    const trimmed = fact.trim();
+    if (trimmed.length === 0 || trimmed.length > 512) {
+      throw new EngineOperationError(
+        "INVALID_REQUEST",
+        "Memories must contain between 1 and 512 characters.",
+      );
+    }
+    let updated;
+    try {
+      updated = this.#database.updateUserFact(factId, trimmed);
+    } catch (error) {
+      throw new EngineOperationError(
+        "INVALID_REQUEST",
+        error instanceof Error ? error.message : "The memory could not be updated.",
+        { cause: error },
+      );
+    }
+    if (updated === null) {
+      throw new EngineOperationError(
+        "MEMORY_FACT_NOT_FOUND",
+        `Memory ${factId} does not exist.`,
+      );
+    }
+    return { ...updated };
+  }
+
+  public deleteUserFact(factId: string): { readonly deletedFactId: string } {
+    this.#assertOpen();
+    if (factId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A fact ID is required.");
+    }
+    if (!this.#database.deleteUserFact(factId)) {
+      throw new EngineOperationError(
+        "MEMORY_FACT_NOT_FOUND",
+        `Memory ${factId} does not exist.`,
+      );
+    }
+    return { deletedFactId: factId };
+  }
+
+  public getMemoryStatus(): RagMemoryStatus {
+    this.#assertOpen();
+    return this.#database.getMemoryStatus(MEMORY_SUMMARY_PROMPT_VERSION);
   }
 
   public listChatFolders(): readonly RagChatFolder[] {

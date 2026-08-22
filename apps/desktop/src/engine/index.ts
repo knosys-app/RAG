@@ -239,6 +239,53 @@ process.parentPort.on("message", (event) => {
           );
           return;
         }
+        case "engine.memory.listFacts": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.listUserFacts(),
+            }),
+          );
+          return;
+        }
+        case "engine.memory.updateFact": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.updateUserFact(
+                parsed.data.params.factId,
+                parsed.data.params.fact,
+              ),
+            }),
+          );
+          return;
+        }
+        case "engine.memory.deleteFact": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.deleteUserFact(parsed.data.params.factId),
+            }),
+          );
+          return;
+        }
+        case "engine.memory.getStatus": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.getMemoryStatus(),
+            }),
+          );
+          return;
+        }
         case "engine.chat.listFolders": {
           if (!engine) throw new Error("The local library is not initialized.");
           process.parentPort.postMessage(

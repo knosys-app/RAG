@@ -33,6 +33,7 @@ import {
   KnosysApiError,
   libraryDeleteDocumentResultSchema,
   librarySnapshotSchema,
+  memoryStatusSchema,
   modelPullEventSchema,
   modelsCancelPullResultSchema,
   modelsPullResultSchema,
@@ -41,6 +42,7 @@ import {
   ragGetStatusResultSchema,
   sourceGetWindowResultSchema,
   systemStatusResponseSchema,
+  userFactSchema,
 } from "../src/index.js";
 
 const REQUEST_ID = "a9da48a8-7aca-4ef1-a7b8-2698b646a944";
@@ -72,6 +74,7 @@ const threadSummary = {
 };
 
 const FOLDER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const FACT_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 const folderSummary = {
   createdAt: NOW,
@@ -1177,6 +1180,60 @@ describe("thread and document management contracts", () => {
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_NOT_FOUND").success).toBe(true);
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_IMPORT_IN_PROGRESS").success).toBe(true);
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_EXPLODED").success).toBe(false);
+  });
+
+  it("routes memory requests and accepts memory results on both unions", () => {
+    const requests = [
+      { id: THREAD_ID, method: "memory.listFacts", params: {} },
+      {
+        id: THREAD_ID,
+        method: "memory.updateFact",
+        params: { fact: "Prefers metric units.", factId: FACT_ID },
+      },
+      { id: THREAD_ID, method: "memory.deleteFact", params: { factId: FACT_ID } },
+      { id: THREAD_ID, method: "memory.getStatus", params: {} },
+      {
+        id: THREAD_ID,
+        method: "memory.setThreadExclusion",
+        params: { excluded: true, threadId: THREAD_ID },
+      },
+    ];
+    for (const request of requests) {
+      expect(ipcRequestSchema.safeParse(request).success).toBe(true);
+      expect(
+        engineRequestSchema.safeParse({
+          ...request,
+          method: `engine.${request.method}`,
+        }).success,
+      ).toBe(true);
+    }
+
+    const fact = {
+      category: "preference",
+      createdAt: NOW,
+      fact: "Prefers metric units.",
+      id: FACT_ID,
+      origin: "extracted",
+      sourceThreadId: null,
+      updatedAt: NOW,
+    };
+    const status = {
+      excludedThreadCount: 1,
+      factCount: 1,
+      staleThreadCount: 0,
+      summarizedThreadCount: 4,
+    };
+    expect(userFactSchema.safeParse(fact).success).toBe(true);
+    expect(memoryStatusSchema.safeParse(status).success).toBe(true);
+    for (const schema of [ipcResultSchema, engineResultSchema]) {
+      expect(schema.safeParse([fact]).success).toBe(true);
+      expect(schema.safeParse(status).success).toBe(true);
+      expect(schema.safeParse({ deletedFactId: FACT_ID }).success).toBe(true);
+    }
+    expect(
+      userFactSchema.safeParse({ ...fact, category: "secret" }).success,
+    ).toBe(false);
+    expect(ipcErrorCodeSchema.safeParse("MEMORY_FACT_NOT_FOUND").success).toBe(true);
   });
 });
 

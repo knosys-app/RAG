@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { MemoryPanel } from "@/components/settings/MemoryPanel";
 import { ModelsPanel } from "@/components/settings/ModelsPanel";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,6 +67,7 @@ const ACCENT_LABELS: Record<AccentPreference, string> = {
 const SETTINGS_TABS = [
   { label: "General", value: "general" },
   { label: "Models", value: "models" },
+  { label: "Memory", value: "memory" },
   { label: "System", value: "system" },
 ] as const;
 
@@ -362,6 +364,16 @@ export function SettingsDialog({
               transition={contentTransition}
             >
               <ModelsPanel rag={rag} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent className="overflow-y-auto pt-2" value="memory">
+            <motion.div
+              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, y: 4 }}
+              transition={contentTransition}
+            >
+              <MemoryPanel />
             </motion.div>
           </TabsContent>
 

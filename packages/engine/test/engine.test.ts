@@ -2099,6 +2099,47 @@ describe("conversation memory maintenance", () => {
     await rm(root, { recursive: true });
   });
 
+  it("manages user facts end to end and reports memory status", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-facts-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "preference", fact: "Prefers drip irrigation." }],
+      version: 1,
+    };
+    await terminalEvent(engine, "How should tomato plants be watered?");
+    await vi.waitFor(
+      () => {
+        expect(engine.listUserFacts()).toMatchObject([
+          { fact: "Prefers drip irrigation.", origin: "extracted" },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(engine.getMemoryStatus()).toMatchObject({
+      excludedThreadCount: 0,
+      factCount: 1,
+      summarizedThreadCount: 1,
+    });
+
+    const fact = engine.listUserFacts()[0]!;
+    const updated = engine.updateUserFact(fact.id, "Prefers soaker hoses.");
+    expect(updated).toMatchObject({ fact: "Prefers soaker hoses.", origin: "user" });
+
+    expect(engine.deleteUserFact(fact.id)).toEqual({ deletedFactId: fact.id });
+    expect(engine.listUserFacts()).toEqual([]);
+    expect(engine.getMemoryStatus().factCount).toBe(0);
+    expect(() => engine.deleteUserFact(fact.id)).toThrow(/does not exist/);
+    expect(() => engine.updateUserFact(randomUUID(), "Whatever")).toThrow(
+      /does not exist/,
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
   it("leaves failed summaries stale, then retries with the prior summary and known facts", async () => {
     const { database, engine, provider, root } = await seedChatEngine("knosys-memory-retry-");
     provider.failThreadSummary = true;

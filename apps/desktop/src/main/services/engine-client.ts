@@ -19,11 +19,15 @@ import {
   importBatchResultSchema,
   libraryDeleteDocumentResultSchema,
   librarySnapshotSchema,
+  memoryDeleteFactResultSchema,
+  memoryStatusSchema,
   modelsCancelPullResultSchema,
   modelsPullResultSchema,
   ragStatusSchema,
   searchResultSchema,
   sourceBlockWindowSchema,
+  userFactListSchema,
+  userFactSchema,
   type ChatAcceptance,
   type ChatCitation,
   type ChatDeleteFolderResult,
@@ -41,6 +45,8 @@ import {
   type ImportProgressEvent,
   type LibraryDeleteDocumentResult,
   type LibrarySnapshot,
+  type MemoryDeleteFactResult,
+  type MemoryStatus,
   type ModelPullEvent,
   type ModelsCancelPullResult,
   type ModelsPullResult,
@@ -48,6 +54,7 @@ import {
   type RecommendedModelName,
   type SearchResult,
   type SourceBlock,
+  type UserFact,
 } from "@knosys-rag/contracts";
 import {
   app,
@@ -287,6 +294,50 @@ export class EngineClient {
         id: randomUUID(),
         method: "engine.memory.setThreadExclusion",
         params: { excluded, threadId },
+      }),
+    );
+  }
+
+  public async listUserFacts(): Promise<readonly UserFact[]> {
+    await this.start();
+    return userFactListSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.memory.listFacts",
+        params: {},
+      }),
+    );
+  }
+
+  public async updateUserFact(factId: string, fact: string): Promise<UserFact> {
+    await this.start();
+    return userFactSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.memory.updateFact",
+        params: { fact, factId },
+      }),
+    );
+  }
+
+  public async deleteUserFact(factId: string): Promise<MemoryDeleteFactResult> {
+    await this.start();
+    return memoryDeleteFactResultSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.memory.deleteFact",
+        params: { factId },
+      }),
+    );
+  }
+
+  public async getMemoryStatus(): Promise<MemoryStatus> {
+    await this.start();
+    return memoryStatusSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.memory.getStatus",
+        params: {},
       }),
     );
   }
