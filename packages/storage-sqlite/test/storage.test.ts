@@ -148,7 +148,7 @@ describe("canonical SQLite storage", () => {
     const threadColumns = raw.prepare("PRAGMA table_info(chat_threads)").all() as {
       name: string;
     }[];
-    expect(migration.version).toBe(9);
+    expect(migration.version).toBe(10);
     expect(chatColumns.map(({ name }) => name)).toContain("answer_provenance_json");
     expect(threadColumns.map(({ name }) => name)).toContain("folder_id");
     expect(tables).toHaveLength(8);
@@ -218,7 +218,7 @@ describe("canonical SQLite storage", () => {
       (check.prepare("SELECT max(version) AS version FROM schema_migrations").get() as {
         version: number;
       }).version,
-    ).toBe(9);
+    ).toBe(10);
     check.close();
     await rm(root, { recursive: true });
   });

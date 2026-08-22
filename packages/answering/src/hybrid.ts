@@ -454,3 +454,20 @@ export function renderEvidenceFirstNarrative(
 ): string {
   return statements.map(({ text }) => text.trim()).join("\n\n");
 }
+
+// Turn the model's own closed-book claims into labeled model statements. Used
+// as the hybrid fallback so a library-silent question still yields the model's
+// answer (clearly marked as model knowledge) instead of a bare refusal.
+export function modelStatementsFromClaims(
+  claims: readonly { readonly text: string }[],
+): readonly EvidenceFirstStatement[] {
+  return claims
+    .map((claim) => claim.text.trim())
+    .filter((text) => text.length > 0)
+    .map((text, index) => ({
+      evidenceIds: [],
+      kind: "model",
+      statementId: `S${index + 1}`,
+      text,
+    }));
+}

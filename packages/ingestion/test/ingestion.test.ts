@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { strToU8, zipSync } from "fflate";
+import { strToU8, zipSync, type Zippable } from "fflate";
 
 import { chunkDocument, DocumentParseError, parseDocumentBytes } from "../src/index.js";
+import { textLines } from "../src/pdf.js";
 
 const encoder = new TextEncoder();
 
@@ -54,6 +55,49 @@ function createDocxFixture(): Uint8Array {
   });
 }
 
+function createDocxWithFooterAndFootnotes(): Uint8Array {
+  return zipSync({
+    "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+        <Default Extension="xml" ContentType="application/xml"/>
+        <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+        <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+        <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>
+        <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
+      </Types>`),
+    "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+      </Relationships>`),
+    "word/_rels/document.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+        <Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+        <Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+      </Relationships>`),
+    "word/styles.xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="en-US"/></w:rPr></w:rPrDefault></w:docDefaults>
+      </w:styles>`),
+    "word/footer1.xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Page footer boilerplate</w:t></w:r></w:p></w:ftr>`),
+    "word/footnotes.xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+        <w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+        <w:footnote w:id="1"><w:p><w:r><w:t>Meter, K. Building Food Security in Alaska.</w:t></w:r></w:p></w:footnote>
+      </w:footnotes>`),
+    "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+      <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <w:body>
+          <w:p><w:r><w:t>Indoor gardening introduction.</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r></w:p>
+          <w:sectPr><w:footerReference w:type="default" r:id="rId9"/><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+        </w:body>
+      </w:document>`),
+  });
+}
+
 function createEpubFixture(): Uint8Array {
   return zipSync({
     mimetype: [strToU8("application/epub+zip"), { level: 0 }],
@@ -64,6 +108,29 @@ function createEpubFixture(): Uint8Array {
       <package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Ordered Garden Book</dc:title><dc:language>en</dc:language><dc:creator>One Author</dc:creator><dc:creator>Two Author</dc:creator></metadata><manifest><item id="two" href="chapter-two.xhtml" media-type="application/xhtml+xml"/><item id="one" href="chapter-one.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>`),
     "OEBPS/chapter-one.xhtml": strToU8(`<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>First chapter</title></head><body><h1 id="first">Planting</h1><p>Plant in spring.</p><table><tr><th>Crop</th><th>Depth</th></tr><tr><td>Pea</td><td>2 cm</td></tr></table></body></html>`),
   });
+}
+
+function buildEpub(
+  chapters: readonly { readonly id: string; readonly href: string; readonly xhtml: string }[],
+  spine: readonly string[],
+): Uint8Array {
+  const manifest = chapters
+    .map((chapter) => `<item id="${chapter.id}" href="${chapter.href}" media-type="application/xhtml+xml"/>`)
+    .join("");
+  const itemrefs = spine.map((id) => `<itemref idref="${id}"/>`).join("");
+  const files: Zippable = {
+    mimetype: [strToU8("application/epub+zip"), { level: 0 }],
+    "META-INF/container.xml": strToU8(
+      `<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+    ),
+    "OEBPS/package.opf": strToU8(
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Test Book</dc:title><dc:language>en</dc:language></metadata><manifest>${manifest}</manifest><spine>${itemrefs}</spine></package>`,
+    ),
+  };
+  for (const chapter of chapters) {
+    files[`OEBPS/${chapter.href}`] = strToU8(chapter.xhtml);
+  }
+  return zipSync(files);
 }
 
 function createPdfFixture(pageTexts: readonly (string | null)[]): Uint8Array {
@@ -175,6 +242,30 @@ describe("simple document parsers", () => {
     });
   });
 
+  it("indexes DOCX footnotes and does not warn about present header/footer parts", async () => {
+    const document = await parseDocumentBytes(
+      createDocxWithFooterAndFootnotes(),
+      "curriculum.docx",
+      "docx",
+    );
+    // The document references a footer and a footnote that ARE present in the
+    // package, so it must not raise a "missing part" review warning.
+    expect(document.diagnostics).toHaveLength(0);
+    // Body text is indexed.
+    expect(document.blocks.some((block) => block.text.includes("Indoor gardening introduction"))).toBe(
+      true,
+    );
+    // The footnote citation text is recovered and searchable, tagged with its source.
+    const footnoteBlock = document.blocks.find((block) =>
+      block.text.includes("Building Food Security in Alaska"),
+    );
+    expect(footnoteBlock).toBeDefined();
+    expect(footnoteBlock?.location?.sourcePath).toBe("word/footnotes.xml");
+    // The separator/continuation notes (ids -1/0) are not indexed.
+    expect(document.blocks.filter((block) => block.location?.sourcePath === "word/footnotes.xml").length)
+      .toBeGreaterThan(0);
+  });
+
   it("follows EPUB spine order and preserves chapter anchors and tables", async () => {
     const document = await parseDocumentBytes(createEpubFixture(), "garden.epub", "epub");
     expect(document.title).toBe("Ordered Garden Book");
@@ -197,6 +288,74 @@ describe("simple document parsers", () => {
     ]);
   });
 
+  it("does not flag an EPUB for review because of an image-only cover page", async () => {
+    const document = await parseDocumentBytes(
+      buildEpub(
+        [
+          {
+            id: "cover",
+            href: "cover.xhtml",
+            xhtml: `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Cover</title></head><body><div class="cover"><img src="cover.png" alt=""/></div></body></html>`,
+          },
+          {
+            id: "c1",
+            href: "c1.xhtml",
+            xhtml: `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter</title></head><body><h1 id="h1">Real Heading</h1><p>Real prose here.</p></body></html>`,
+          },
+        ],
+        ["cover", "c1"],
+      ),
+      "book.epub",
+      "epub",
+    );
+    // The cover page yields no text, but that must not raise a review warning
+    // when the book itself is full of text.
+    expect(document.diagnostics.some((d) => d.code === "EMPTY_DOCUMENT")).toBe(false);
+    expect(document.blocks.length).toBeGreaterThan(0);
+    expect(
+      document.blocks.filter((block) => block.type === "heading").map((block) => block.text),
+    ).toContain("Real Heading");
+    expect(document.blocks.some((block) => block.text === "Real prose here.")).toBe(true);
+  });
+
+  it("captures EPUB prose wrapped only in div/span/a without double-counting", async () => {
+    const document = await parseDocumentBytes(
+      buildEpub(
+        [
+          {
+            id: "c1",
+            href: "c1.xhtml",
+            xhtml: `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body><div class="pg_body_wrapper"><span style="margin-left:2em"><a href="#x" class="pginternal">Bare wrapper prose.</a></span></div><div>Loose div text.<p>Real paragraph.</p></div></body></html>`,
+          },
+        ],
+        ["c1"],
+      ),
+      "book.epub",
+      "epub",
+    );
+    const texts = document.blocks.map((block) => block.text);
+    expect(texts).toContain("Bare wrapper prose.");
+    expect(texts).toContain("Loose div text.");
+    expect(texts).toContain("Real paragraph.");
+    // Each string appears exactly once — the nested <p> is not also swallowed by
+    // its parent <div>, and the inline wrappers are not counted twice.
+    expect(texts.filter((text) => text === "Real paragraph.")).toHaveLength(1);
+    expect(texts.filter((text) => text === "Bare wrapper prose.")).toHaveLength(1);
+    expect(texts.some((text) => text.includes("Loose div text. Real paragraph."))).toBe(false);
+  });
+
+  it("still reports a genuinely empty standalone HTML document", async () => {
+    const document = await parseDocumentBytes(
+      encoder.encode(
+        `<html><head><title>Empty</title></head><body><img src="x.png" alt=""/></body></html>`,
+      ),
+      "empty.html",
+      "html",
+    );
+    expect(document.blocks).toHaveLength(0);
+    expect(document.diagnostics.some((d) => d.code === "EMPTY_DOCUMENT")).toBe(true);
+  });
+
   it("rejects EPUB entries with zip-bomb compression ratios", async () => {
     const archive = zipSync({
       mimetype: [strToU8("application/epub+zip"), { level: 0 }],
@@ -207,7 +366,7 @@ describe("simple document parsers", () => {
     );
   });
 
-  it("extracts native PDF text with page anchors and mixed-page warnings", async () => {
+  it("indexes native PDF text and treats image-only pages as informational, not a review flag", async () => {
     const document = await parseDocumentBytes(
       createPdfFixture(["Plant tomatoes in full sun.", null]),
       "garden.pdf",
@@ -223,15 +382,51 @@ describe("simple document parsers", () => {
       ["Plant tomatoes in full sun.", 1],
     ]);
     expect(document.sections).toHaveLength(2);
+    // The image-only page is recorded as info, never a review warning.
     expect(document.diagnostics).toContainEqual(
-      expect.objectContaining({ code: "PDF_PAGES_REQUIRE_OCR", severity: "warning" }),
+      expect.objectContaining({ code: "PDF_PAGES_REQUIRE_OCR", severity: "info" }),
     );
+    expect(document.diagnostics.some((diagnostic) => diagnostic.severity === "warning")).toBe(false);
   });
 
   it("reports OCR-required PDFs instead of silently indexing no text", async () => {
     await expect(
       parseDocumentBytes(createPdfFixture([null]), "scan.pdf", "pdf"),
     ).rejects.toMatchObject({ code: "PDF_OCR_REQUIRED" });
+  });
+});
+
+// createPdfFixture writes real PDF bytes that pdfjs decodes with a normal font,
+// so it cannot reproduce the broken-space-glyph defect (U+FFFD standing in for a
+// space). These exercise the text-assembly seam directly with synthetic items.
+describe("PDF text extraction repair", () => {
+  const pdfItem = (str: string, options: { readonly eol?: boolean; readonly y?: number } = {}) => ({
+    hasEOL: options.eol ?? true,
+    height: 12,
+    str,
+    transform: [1, 0, 0, 1, 72, options.y ?? 700] as const,
+  });
+
+  it("restores replacement characters that stand in for spaces between words", () => {
+    const { lines, replacementCharacters } = textLines([
+      pdfItem("Recommended\uFFFDprocess\uFFFDtime\uFFFDfor\uFFFDDill\uFFFDPickles"),
+    ]);
+    expect(lines).toEqual(["Recommended process time for Dill Pickles"]);
+    // Nothing garbled survives into the index, so no suspicious-character flag.
+    expect(replacementCharacters).toBe(0);
+  });
+
+  it("keeps genuine replacement-character garble and counts it toward the flag", () => {
+    const { lines, replacementCharacters } = textLines([pdfItem("the \uFFFD\uFFFD\uFFFD\uFFFD of")]);
+    // A run bounded by spaces is not a lost separator: leave it as a signal.
+    expect(lines[0]).toContain("\uFFFD");
+    expect(replacementCharacters).toBe(4);
+  });
+
+  it("preserves private-use glyphs so low-quality detection still sees them", () => {
+    const { lines, replacementCharacters } = textLines([pdfItem("chart \uE000\uE001 legend")]);
+    expect(lines[0]).toBe("chart \uE000\uE001 legend");
+    expect(replacementCharacters).toBe(0);
   });
 });
 

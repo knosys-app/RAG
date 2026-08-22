@@ -1013,6 +1013,31 @@ describe("evidence confidence", () => {
       reasons: ["calibration-mismatch"],
     });
   });
+
+  it("calibrates multi-turn follow-ups instead of forcing calibration mismatch", () => {
+    const retrieval = vectorRetrievalResult([
+      { score: 0.55, text: "Marrowfern seed treatment details." },
+      { score: 0.45, text: "Other notes." },
+    ]);
+    const context = selectAnswerContext(retrieval);
+    // A follow-up is retrieved from a rewritten standalone question
+    // (questionContextualizationVersion set); it must still be scored on its
+    // real retrieval signals, not bounced to the uncertain/model-answerability
+    // route by a calibration mismatch.
+    const assessment = assessEvidenceConfidence(
+      "How should Marrowfern seeds be pretreated?",
+      retrieval,
+      context,
+      {
+        ...referenceConfidenceEnvironment,
+        questionContextualizationVersion: "standalone-question-v1",
+      },
+    );
+    expect(assessment).toMatchObject({
+      label: "uncertain",
+      reasons: ["wide-uncertain-band"],
+    });
+  });
 });
 
 describe("context selection", () => {

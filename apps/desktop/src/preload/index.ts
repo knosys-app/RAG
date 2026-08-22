@@ -13,6 +13,7 @@ import {
   chatThreadSummarySchema,
   IPC_EVENT_CHANNEL,
   IPC_INVOKE_CHANNEL,
+  documentReviewSchema,
   importProgressEventSchema,
   importSelectionResultSchema,
   ipcResponseSchema,
@@ -45,10 +46,14 @@ async function invoke<TSchema extends z.ZodType>(
     | "chat.renameThread"
     | "chat.send"
     | "evidence.get"
+    | "library.acknowledgeReview"
     | "library.deleteDocument"
+    | "library.getDocumentReview"
     | "library.getSnapshot"
     | "library.importDirectory"
     | "library.importFiles"
+    | "library.replaceDocument"
+    | "library.reprocessDocument"
     | "library.search"
     | "models.cancelPull"
     | "models.pull"
@@ -109,16 +114,24 @@ const api: KnosysDesktopApi = {
       invoke("evidence.get", { citationId }, chatCitationSchema),
   },
   library: {
+    acknowledgeReview: (documentId) =>
+      invoke("library.acknowledgeReview", { documentId }, librarySnapshotSchema),
     deleteDocument: (documentId) =>
       invoke(
         "library.deleteDocument",
         { documentId },
         libraryDeleteDocumentResultSchema,
       ),
+    getDocumentReview: (documentId) =>
+      invoke("library.getDocumentReview", { documentId }, documentReviewSchema),
     getSnapshot: () => invoke("library.getSnapshot", {}, librarySnapshotSchema),
     importDirectory: () =>
       invoke("library.importDirectory", {}, importSelectionResultSchema),
     importFiles: () => invoke("library.importFiles", {}, importSelectionResultSchema),
+    replaceDocument: (documentId) =>
+      invoke("library.replaceDocument", { documentId }, importSelectionResultSchema),
+    reprocessDocument: (documentId) =>
+      invoke("library.reprocessDocument", { documentId }, librarySnapshotSchema),
     onImportProgress: (listener) => {
       const handler = (_event: Electron.IpcRendererEvent, rawEvent: unknown) => {
         const event = importProgressEventSchema.safeParse(rawEvent);

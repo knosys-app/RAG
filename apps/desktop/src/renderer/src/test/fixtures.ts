@@ -246,6 +246,7 @@ export const evidenceFirstProvenance = {
     contextualization: null,
     evidenceAnswer: "evidence-first-answer-v1",
     groundedDerivation: "transparent-grounded-derivations-v1",
+    modelDraft: "closed-book-answer-v1",
     verification: "evidence-first-verification-v1",
   },
   stages: {
@@ -403,6 +404,7 @@ export const documentSummary = {
   format: "markdown" as const,
   id: DOCUMENT_ID,
   originalName: "tomato-notes.md",
+  reviewedAt: null,
   sizeBytes: 1024,
   status: "ready" as const,
   title: "Tomato notes",
@@ -500,7 +502,11 @@ export function installKnosysApi(options: InstallApiOptions = {}) {
       ),
     },
     library: {
+      acknowledgeReview: vi.fn().mockResolvedValue(options.snapshot ?? emptySnapshot),
       deleteDocument: vi.fn(),
+      getDocumentReview: vi
+        .fn()
+        .mockResolvedValue({ diagnostics: [], document: documentSummary }),
       getSnapshot: vi.fn().mockResolvedValue(options.snapshot ?? emptySnapshot),
       importDirectory: vi.fn(),
       importFiles: options.importFiles
@@ -512,6 +518,8 @@ export function installKnosysApi(options: InstallApiOptions = {}) {
           return () => undefined;
         },
       ),
+      replaceDocument: vi.fn().mockResolvedValue({ batch: null, cancelled: true }),
+      reprocessDocument: vi.fn().mockResolvedValue(options.snapshot ?? emptySnapshot),
       search: vi.fn().mockResolvedValue(options.searchResults ?? []),
     },
     preferences: {

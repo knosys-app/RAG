@@ -65,6 +65,7 @@ export interface AnswerProvenanceV2 {
     readonly contextualization: string | null;
     readonly evidenceAnswer: string;
     readonly groundedDerivation: string;
+    readonly modelDraft: string | null;
     readonly verification: string;
   };
   readonly stages: {

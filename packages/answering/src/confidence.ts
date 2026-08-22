@@ -163,7 +163,9 @@ function matchesReferenceCalibration(
       REFERENCE_CALIBRATION.documentEmbeddingInputVersion &&
     environment.queryEmbeddingInstructionVersion ===
       REFERENCE_CALIBRATION.queryEmbeddingInstructionVersion &&
-    environment.questionContextualizationVersion === null &&
+    // A multi-turn follow-up is retrieved from a rewritten standalone question;
+    // its retrieval signals are still valid, so calibrate on them rather than
+    // forcing every contextualized turn onto the uncertain route.
     retrieval.trace.version === 1 &&
     retrieval.trace.candidatePoolSize === REFERENCE_CALIBRATION.candidatePoolSize &&
     retrieval.trace.rrfK === REFERENCE_CALIBRATION.rrfK &&

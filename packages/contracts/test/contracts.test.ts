@@ -16,6 +16,7 @@ import {
   chatRenameThreadResultSchema,
   chatSendResultSchema,
   chatThreadSummarySchema,
+  documentReviewSchema,
   engineEventEnvelopeSchema,
   engineRequestSchema,
   engineResponseSchema,
@@ -252,6 +253,7 @@ const answerProvenanceV2 = {
     contextualization: null,
     evidenceAnswer: "evidence-answer-v1",
     groundedDerivation: "transparent-grounded-derivations-v2",
+    modelDraft: "closed-book-answer-v1",
     verification: "evidence-answer-verification-v1",
   },
   stages: {
@@ -603,6 +605,20 @@ describe("IPC contracts", () => {
     ).toBe(true);
   });
 
+  it("parses V2 provenance stored before modelDraft existed and defaults it to null", () => {
+    const legacy = answerProvenanceV2Schema.safeParse({
+      ...answerProvenanceV2,
+      promptVersions: {
+        contextualization: answerProvenanceV2.promptVersions.contextualization,
+        evidenceAnswer: answerProvenanceV2.promptVersions.evidenceAnswer,
+        groundedDerivation: answerProvenanceV2.promptVersions.groundedDerivation,
+        verification: answerProvenanceV2.promptVersions.verification,
+      },
+    });
+    expect(legacy.success).toBe(true);
+    if (legacy.success) expect(legacy.data.promptVersions.modelDraft).toBeNull();
+  });
+
   it("enforces V2 evidence ownership and bounded marker-free statement text", () => {
     expect(
       answerProvenanceV2Schema.safeParse({
@@ -949,6 +965,10 @@ describe("thread and document management contracts", () => {
     ["chat.deleteThread", { threadId: THREAD_ID }],
     ["chat.renameThread", { threadId: THREAD_ID, title: "Seed storage tips" }],
     ["library.deleteDocument", { documentId: DOCUMENT_ID }],
+    ["library.getDocumentReview", { documentId: DOCUMENT_ID }],
+    ["library.acknowledgeReview", { documentId: DOCUMENT_ID }],
+    ["library.replaceDocument", { documentId: DOCUMENT_ID }],
+    ["library.reprocessDocument", { documentId: DOCUMENT_ID }],
   ])("accepts the public %s request", (method, params) => {
     expect(ipcRequestSchema.safeParse({ id: REQUEST_ID, method, params }).success).toBe(true);
   });
@@ -957,8 +977,51 @@ describe("thread and document management contracts", () => {
     ["engine.chat.deleteThread", { threadId: THREAD_ID }],
     ["engine.chat.renameThread", { threadId: THREAD_ID, title: "Seed storage tips" }],
     ["engine.library.deleteDocument", { documentId: DOCUMENT_ID }],
+    ["engine.library.getDocumentReview", { documentId: DOCUMENT_ID }],
+    ["engine.library.acknowledgeReview", { documentId: DOCUMENT_ID }],
+    [
+      "engine.library.replaceDocument",
+      { documentId: DOCUMENT_ID, path: "/tmp/replacement.pdf" },
+    ],
+    ["engine.library.reprocessDocument", { documentId: DOCUMENT_ID }],
   ])("accepts the internal %s request", (method, params) => {
     expect(engineRequestSchema.safeParse({ id: REQUEST_ID, method, params }).success).toBe(true);
+  });
+
+  it("round-trips a document review payload with diagnostics", () => {
+    const review = {
+      diagnostics: [
+        {
+          code: "PDF_PAGES_REQUIRE_OCR",
+          location: { pageNumber: 3 },
+          message: "3 of 40 pages contain no selectable text and were not indexed.",
+          severity: "warning" as const,
+        },
+      ],
+      document: {
+        createdAt: "2026-08-21T00:00:00.000Z",
+        diagnosticCount: 1,
+        errorCode: null,
+        errorMessage: null,
+        format: "pdf" as const,
+        id: DOCUMENT_ID,
+        originalName: "guide.pdf",
+        reviewedAt: null,
+        sizeBytes: 4096,
+        status: "ready-with-warnings" as const,
+        title: "Guide",
+        updatedAt: "2026-08-21T00:00:00.000Z",
+      },
+    };
+    const parsed = documentReviewSchema.safeParse(review);
+    expect(parsed.success).toBe(true);
+    // A required field on the summary is still enforced.
+    expect(
+      documentReviewSchema.safeParse({
+        ...review,
+        document: { ...review.document, reviewedAt: undefined },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects malformed thread and document management params", () => {

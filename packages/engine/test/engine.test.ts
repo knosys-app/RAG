@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -573,6 +573,128 @@ describe("managed library ingestion", () => {
     engine.close();
   });
 
+  it("exposes parse diagnostics for a document imported with warnings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-review-"));
+    const source = join(root, "with-html.md");
+    await writeFile(source, "# Heading\n\nReal paragraph text.\n\n<div>raw</div>\n", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const batch = await engine.importPaths([source]);
+    const document = batch.snapshot.documents[0];
+    expect(document).toMatchObject({ reviewedAt: null, status: "ready-with-warnings" });
+    expect(document?.diagnosticCount).toBeGreaterThan(0);
+
+    const review = engine.getDocumentReview(document!.id);
+    expect(review.document.id).toBe(document!.id);
+    expect(review.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      "MARKDOWN_RAW_HTML_OMITTED",
+    );
+    expect(review.diagnostics[0]?.severity).toBe("warning");
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("marks a warning document reviewed without re-importing it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-ack-"));
+    const source = join(root, "with-html.md");
+    await writeFile(source, "# Heading\n\nReal text.\n\n<div>raw</div>\n", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const batch = await engine.importPaths([source]);
+    const documentId = batch.snapshot.documents[0]!.id;
+
+    const snapshot = engine.acknowledgeDocumentReview(documentId);
+    const reviewed = snapshot.documents.find((doc) => doc.id === documentId);
+    expect(reviewed?.status).toBe("ready-with-warnings");
+    expect(reviewed?.reviewedAt).not.toBeNull();
+    // The document stays searchable after acknowledgement.
+    expect(engine.search("Real text")).toHaveLength(1);
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("refuses to acknowledge a document that has no warnings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-ack-clean-"));
+    const source = join(root, "clean.md");
+    await writeFile(source, "# Clean\n\nJust plain text.", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const batch = await engine.importPaths([source]);
+    const documentId = batch.snapshot.documents[0]!.id;
+    expect(batch.snapshot.documents[0]?.status).toBe("ready");
+    expect(() => engine.acknowledgeDocumentReview(documentId)).toThrow();
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("replaces a flagged document's source with a clean import", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-replace-"));
+    const flagged = join(root, "with-html.md");
+    await writeFile(flagged, "# Heading\n\nReal text.\n\n<div>raw</div>\n", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const first = await engine.importPaths([flagged]);
+    const originalId = first.snapshot.documents[0]!.id;
+
+    const clean = join(root, "clean.md");
+    await writeFile(clean, "# Clean\n\nJust plain text here.", "utf8");
+    const result = await engine.replaceDocument(originalId, clean);
+    expect(result).toMatchObject({ imported: 1 });
+    expect(result.snapshot.documents).toHaveLength(1);
+    const replacement = result.snapshot.documents[0];
+    expect(replacement?.status).toBe("ready");
+    expect(replacement?.id).not.toBe(originalId);
+    // The original document is gone.
+    expect(() => engine.getDocumentReview(originalId)).toThrow();
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("rejects a replacement file whose type is unsupported", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-replace-bad-"));
+    const source = join(root, "notes.md");
+    await writeFile(source, "# Notes\n\nText.", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const batch = await engine.importPaths([source]);
+    const documentId = batch.snapshot.documents[0]!.id;
+    await expect(
+      engine.replaceDocument(documentId, join(root, "image.png")),
+    ).rejects.toThrow();
+    // The original document is preserved because the guard runs before deletion.
+    expect(engine.getSnapshot().documents).toHaveLength(1);
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("reprocesses an imported document from its managed copy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-reprocess-"));
+    const source = join(root, "with-html.md");
+    await writeFile(source, "# Heading\n\nReal text about frumenty.\n\n<div>raw</div>\n", "utf8");
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    const batch = await engine.importPaths([source]);
+    const documentId = batch.snapshot.documents[0]!.id;
+    expect(batch.snapshot.documents[0]?.status).toBe("ready-with-warnings");
+    engine.acknowledgeDocumentReview(documentId);
+    expect(engine.getSnapshot().documents[0]?.reviewedAt).not.toBeNull();
+
+    // Remove the ORIGINAL file to prove reprocess reads the managed copy.
+    await rm(source, { force: true });
+    const snapshot = await engine.reprocessDocument(documentId);
+    const reprocessed = snapshot.documents.find((doc) => doc.id === documentId);
+    expect(reprocessed?.id).toBe(documentId);
+    // A fresh assessment clears any prior acknowledgement.
+    expect(reprocessed?.reviewedAt).toBeNull();
+    expect(engine.search("frumenty")).toHaveLength(1);
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("rejects reprocessing a document that does not exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-reprocess-missing-"));
+    const engine = new KnowledgeEngine(join(root, "app-data"), sqliteVec.getLoadablePath());
+    await expect(
+      engine.reprocessDocument("00000000-0000-4000-8000-000000000000"),
+    ).rejects.toThrow();
+    engine.close();
+    await rm(root, { recursive: true });
+  });
+
   it("discovers supported files without following symlinks", async () => {
     const root = await mkdtemp(join(tmpdir(), "knosys-discovery-"));
     await writeFile(join(root, "one.txt"), "One", "utf8");
@@ -1013,7 +1135,11 @@ describe("production RAG orchestration", () => {
     expect(provider.operationLog.indexOf("evidence-generation")).toBeLessThan(
       provider.operationLog.indexOf("evidence-verification"),
     );
-    expect(provider.closedBookRequests).toEqual([]);
+    // Hybrid now drafts the model's own answer (for synthesis + as the
+    // never-refuse fallback), so the closed-book generator is invoked once.
+    expect(provider.closedBookRequests).toEqual([
+      { question: "How should tomato plants be watered?" },
+    ]);
     expect(provider.reconciliationRequests).toEqual([]);
     expect(provider.synthesisRequests).toEqual([]);
     expect(provider.streamRequests).toEqual([]);
@@ -1040,6 +1166,7 @@ describe("production RAG orchestration", () => {
     expect(completed.message).toMatchObject({
       answerProvenance: {
         mode: "labeled-hybrid",
+        promptVersions: { modelDraft: "closed-book-answer-v1" },
         stages: {
           generation: { status: "completed" },
           verification: { status: "completed" },
@@ -1120,6 +1247,48 @@ describe("production RAG orchestration", () => {
       content: "Keep tomato leaves dry.",
       role: "assistant",
     });
+    engine.close();
+  });
+
+  it("answers from the model draft instead of refusing when the library is silent and verification fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "knosys-rag-hybrid-silent-fallback-"));
+    const source = join(root, "tomatoes.txt");
+    await writeFile(source, "Tomato notes.", "utf8");
+    const provider = new FakeInferenceProvider();
+    provider.verificationAcceptable = false;
+    const engine = new KnowledgeEngine(join(root, "app-data"), vectorExtensionPath, {
+      inferenceProvider: provider,
+    });
+    await engine.importPaths([source]);
+    await engine.initializeRag();
+    await waitForBackfill(engine);
+
+    const { events } = await terminalEvent(
+      engine,
+      "unanswerable tomato question",
+      undefined,
+      null,
+    );
+    const completed = events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected hybrid completion.");
+    // The library covers nothing and verification rejects the drafted
+    // statements, yet Hybrid still returns the model's own answer (labeled),
+    // never the canned "does not contain" refusal.
+    expect(completed).toMatchObject({ fallback: true, insufficient: false });
+    expect(completed.message.content).toBe("Keep tomato leaves dry.");
+    expect(completed.message.content).not.toContain("does not contain");
+    expect(completed.message).toMatchObject({
+      answerProvenance: {
+        stages: { verification: { status: "failed" } },
+        statements: [{ evidenceIds: [], kind: "model", statementId: "S1" }],
+        version: 2,
+      },
+      citations: [],
+      status: "completed",
+    });
+    expect(provider.closedBookRequests).toEqual([
+      { question: "unanswerable tomato question" },
+    ]);
     engine.close();
   });
 

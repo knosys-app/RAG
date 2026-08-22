@@ -314,6 +314,9 @@ export async function parseEpubBytes(
         format: "epub",
         parserId: "epub-xhtml-parse5",
         sourcePath: chapterPath,
+        // Image-only spine pages (covers, illustration wrappers) legitimately
+        // hold no text; emptiness is judged at the whole-document level below.
+        suppressEmptyDiagnostic: true,
       });
       const startBlockOrdinal = blocks.length;
       const hasHeading = chapter.blocks.some((block) => block.type === "heading");

@@ -21,6 +21,13 @@ import type {
 
 const MEBIBYTE = 1024 * 1024;
 
+// Footnote/endnote shape from folio's package (only the fields we index). Real
+// notes carry block content; separator/continuation notes (ids -1/0) do not.
+interface FolioNote {
+  readonly content: readonly BlockContent[];
+  readonly noteType?: string;
+}
+
 function fallbackTitle(filename: string): string {
   const withoutExtension = filename.replace(/\.[^.]+$/, "");
   return withoutExtension.replace(/[-_]+/g, " ").trim() || filename;
@@ -153,7 +160,11 @@ export async function parseDocxBytes(
     parsed = await parseDocx(Uint8Array.from(bytes).buffer, {
       detectVariables: false,
       parseHeadersFooters: false,
-      parseNotes: false,
+      // Parse footnotes/endnotes so their references resolve (avoiding false
+      // "missing note" validation warnings) and their text can be indexed.
+      // Headers/footers stay off: their references are filtered below, and their
+      // text is repeated boilerplate not worth indexing.
+      parseNotes: true,
       preloadFonts: false,
       unzipLimits: {
         allowedMediaMimeTypes: [],
@@ -177,6 +188,9 @@ export async function parseDocxBytes(
   const headingPath: string[] = [];
   let sectionOrdinal = 0;
   let sectionStart = 0;
+  // Which package part the blocks being emitted come from. The body is
+  // word/document.xml; footnote/endnote passes switch this for provenance.
+  let currentSourcePath = "word/document.xml";
 
   const addBlock = (
     type: DocumentBlockType,
@@ -192,7 +206,7 @@ export async function parseDocxBytes(
       ...(options.level === undefined ? {} : { level: options.level }),
       location: {
         fragment: options.fragment ?? `block-${blocks.length}`,
-        sourcePath: "word/document.xml",
+        sourcePath: currentSourcePath,
       },
       ordinal: blocks.length,
       text: text.trim(),
@@ -276,11 +290,44 @@ export async function parseDocxBytes(
     closeSection(parsed.package.document.finalSectionProperties);
   }
 
-  const diagnostics: ParseDiagnostic[] = (parsed.warnings ?? []).map((message) => ({
-    code: "DOCX_PARSER_WARNING",
-    message,
-    severity: "warning",
-  }));
+  // Footnotes/endnotes carry real content (citations, asides) that the body
+  // only references. Index them as a trailing section so they are searchable.
+  // Folio already excludes the separator/continuation notes (ids -1/0).
+  const notePackage = parsed.package as {
+    readonly endnotes?: readonly FolioNote[];
+    readonly footnotes?: readonly FolioNote[];
+  };
+  const noteGroups: readonly { readonly label: string; readonly notes: readonly FolioNote[]; readonly sourcePath: string }[] = [
+    { label: "Footnotes", notes: notePackage.footnotes ?? [], sourcePath: "word/footnotes.xml" },
+    { label: "Endnotes", notes: notePackage.endnotes ?? [], sourcePath: "word/endnotes.xml" },
+  ];
+  for (const group of noteGroups) {
+    const contentNotes = group.notes.filter(
+      (note) =>
+        note.noteType !== "separator" &&
+        note.noteType !== "continuationSeparator" &&
+        note.content.length > 0,
+    );
+    if (contentNotes.length === 0) continue;
+    currentSourcePath = group.sourcePath;
+    headingPath.length = 0;
+    const notesStart = blocks.length;
+    headingPath[0] = group.label;
+    addBlock("heading", group.label, {}, { level: 1 });
+    for (const note of contentNotes) visit(note.content);
+    if (blocks.length > notesStart) closeSection();
+  }
+  currentSourcePath = "word/document.xml";
+
+  const diagnostics: ParseDiagnostic[] = (parsed.warnings ?? [])
+    // Drop the false "missing header/footer" validation warnings that folio
+    // raises only because we intentionally do not parse those parts.
+    .filter((message) => !/missing (?:header|footer)\b/i.test(message))
+    .map((message) => ({
+      code: "DOCX_PARSER_WARNING" as const,
+      message,
+      severity: "warning" as const,
+    }));
   if (!blocks.length) {
     diagnostics.push({
       code: "EMPTY_DOCUMENT",

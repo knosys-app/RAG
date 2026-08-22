@@ -1,5 +1,5 @@
 import type { DocumentSummary } from "@knosys-rag/contracts";
-import { AlertTriangle, ChevronRight, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronRight, ClipboardCheck, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { formatBytes, formatDate } from "@/lib/format";
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 interface DocumentListProps {
   readonly documents: readonly DocumentSummary[];
   readonly onDelete: (document: DocumentSummary) => void;
+  readonly onReview: (document: DocumentSummary) => void;
 }
 
 const STATUS_STYLES: Record<DocumentSummary["status"], string> = {
@@ -18,13 +19,29 @@ const STATUS_STYLES: Record<DocumentSummary["status"], string> = {
   "ready-with-warnings": "bg-amber-500/15 text-amber-600 dark:text-amber-400",
 };
 
-export function DocumentList({ documents, onDelete }: DocumentListProps): ReactNode {
+const REVIEWED_STATUS_STYLE = "bg-muted text-muted-foreground";
+
+function needsReview(document: DocumentSummary): boolean {
+  return (
+    document.status === "failed" ||
+    (document.status === "ready-with-warnings" && document.reviewedAt === null)
+  );
+}
+
+export function DocumentList({
+  documents,
+  onDelete,
+  onReview,
+}: DocumentListProps): ReactNode {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
     <div className="divide-y rounded-xl border bg-card">
       {documents.map((document) => {
         const expanded = expandedId === document.id;
+        const reviewable = needsReview(document);
+        const reviewed =
+          document.status === "ready-with-warnings" && document.reviewedAt !== null;
         return (
           <div className="group" key={document.id}>
             <div className="flex items-center gap-2 px-3 py-2.5">
@@ -56,12 +73,25 @@ export function DocumentList({ documents, onDelete }: DocumentListProps): ReactN
                 <span
                   className={cn(
                     "shrink-0 rounded-md px-2 py-0.5 text-xs font-medium",
-                    STATUS_STYLES[document.status],
+                    reviewed ? REVIEWED_STATUS_STYLE : STATUS_STYLES[document.status],
                   )}
                 >
                   {documentStatusLabel(document)}
                 </span>
               </button>
+              {reviewable ? (
+                <button
+                  className="shrink-0 rounded-md border border-amber-500/40 px-2 py-1 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-500/10 dark:text-amber-400"
+                  onClick={() => {
+                    onReview(document);
+                  }}
+                  type="button"
+                >
+                  <span className="flex items-center gap-1">
+                    <ClipboardCheck size={13} /> Review
+                  </span>
+                </button>
+              ) : null}
               <button
                 aria-label={`Delete ${document.title}`}
                 className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
