@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -17,9 +17,12 @@ import {
   type SourceLocation,
 } from "@knosys-rag/core";
 
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 11;
 const MAX_EMBEDDING_BATCH_SIZE = 500;
 const MAX_RETRIEVAL_RESULTS = 100;
+const MAX_MEMORY_SUMMARY_CHARACTERS = 4_000;
+export const MAX_ACTIVE_USER_FACTS = 32;
+export const MAX_USER_FACT_CHARACTERS = 512;
 
 export const SEMANTIC_INDEX_JOB_STATUSES = [
   "queued",
@@ -233,9 +236,77 @@ export interface ChatThreadSummary {
   readonly id: string;
   readonly lastMessageAt: string | null;
   readonly lastMessagePreview: string | null;
+  readonly memoryExcluded: boolean;
   readonly messageCount: number;
   readonly title: string;
   readonly updatedAt: string;
+}
+
+export const USER_FACT_CATEGORIES = ["preference", "profile", "project", "other"] as const;
+export type UserFactCategory = (typeof USER_FACT_CATEGORIES)[number];
+export type UserFactOrigin = "extracted" | "user";
+
+export interface UserFact {
+  readonly category: UserFactCategory;
+  readonly createdAt: string;
+  readonly fact: string;
+  readonly id: string;
+  readonly origin: UserFactOrigin;
+  readonly sourceThreadId: string | null;
+  readonly updatedAt: string;
+}
+
+export interface NewExtractedUserFact {
+  readonly category: UserFactCategory;
+  readonly fact: string;
+  readonly sourceThreadId: string | null;
+}
+
+export interface ThreadMemoryInput {
+  readonly promptVersion: string;
+  readonly summarizedMessageCount: number;
+  readonly summaryJson: object;
+  readonly summaryText: string;
+  readonly threadId: string;
+  readonly topics: readonly string[];
+}
+
+export interface ThreadMemory extends ThreadMemoryInput {
+  readonly contentHash: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface MemorySummaryWorkItem {
+  readonly completedMessageCount: number;
+  readonly threadId: string;
+}
+
+export interface MemoryEmbeddingWorkItem {
+  readonly contentHash: string;
+  readonly summaryText: string;
+  readonly threadId: string;
+}
+
+export interface MemoryEmbeddingInput {
+  readonly contentHash: string;
+  readonly embedding: Float32Array | readonly number[];
+  readonly threadId: string;
+}
+
+export interface MemorySearchResult {
+  readonly content: string;
+  readonly score: number;
+  readonly threadId: string;
+  readonly threadTitle: string;
+  readonly threadUpdatedAt: string;
+}
+
+export interface MemoryStatus {
+  readonly excludedThreadCount: number;
+  readonly factCount: number;
+  readonly staleThreadCount: number;
+  readonly summarizedThreadCount: number;
 }
 
 export interface ChatFolder {
@@ -670,6 +741,80 @@ const MIGRATION_9 = `
   ) STRICT;
 `;
 
+const MIGRATION_11 = `
+  CREATE TABLE thread_memories (
+    thread_id TEXT PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+    summary_json TEXT NOT NULL,
+    summary_text TEXT NOT NULL
+      CHECK(length(summary_text) > 0 AND length(summary_text) <= ${MAX_MEMORY_SUMMARY_CHARACTERS}),
+    topics_json TEXT NOT NULL,
+    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+    prompt_version TEXT NOT NULL CHECK(length(prompt_version) > 0),
+    summarized_message_count INTEGER NOT NULL CHECK(summarized_message_count >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TABLE memory_embeddings (
+    thread_id TEXT NOT NULL REFERENCES thread_memories(thread_id) ON DELETE CASCADE,
+    embedding_profile_id TEXT NOT NULL REFERENCES embedding_profiles(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+    embedding BLOB NOT NULL CHECK(length(embedding) > 0 AND length(embedding) % 4 = 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(thread_id, embedding_profile_id)
+  ) STRICT;
+
+  CREATE VIRTUAL TABLE memories_fts USING fts5(
+    thread_id UNINDEXED,
+    title,
+    topics,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+  );
+
+  CREATE TABLE user_facts (
+    id TEXT PRIMARY KEY,
+    fact TEXT NOT NULL CHECK(length(fact) > 0 AND length(fact) <= ${MAX_USER_FACT_CHARACTERS}),
+    normalized_hash TEXT NOT NULL UNIQUE CHECK(length(normalized_hash) = 64),
+    category TEXT NOT NULL CHECK(category IN (${sqlList(USER_FACT_CATEGORIES)})),
+    origin TEXT NOT NULL CHECK(origin IN ('extracted', 'user')),
+    status TEXT NOT NULL CHECK(status IN ('active', 'deleted')),
+    source_thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
+
+  CREATE INDEX thread_memories_updated_idx ON thread_memories(updated_at DESC);
+  CREATE INDEX memory_embeddings_profile_hash_idx
+    ON memory_embeddings(embedding_profile_id, content_hash);
+  CREATE INDEX user_facts_status_created_idx ON user_facts(status, created_at);
+
+  CREATE TRIGGER memory_embeddings_dimensions_insert
+  BEFORE INSERT ON memory_embeddings
+  WHEN length(NEW.embedding) != (
+    SELECT dimensions * 4 FROM embedding_profiles WHERE id = NEW.embedding_profile_id
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'embedding dimensions do not match profile');
+  END;
+
+  CREATE TRIGGER memory_embeddings_dimensions_update
+  BEFORE UPDATE OF embedding, embedding_profile_id ON memory_embeddings
+  WHEN length(NEW.embedding) != (
+    SELECT dimensions * 4 FROM embedding_profiles WHERE id = NEW.embedding_profile_id
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'embedding dimensions do not match profile');
+  END;
+
+  CREATE TRIGGER thread_memories_fts_delete
+  AFTER DELETE ON thread_memories
+  BEGIN
+    DELETE FROM memories_fts WHERE thread_id = OLD.thread_id;
+  END;
+`;
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) {
     throw new Error("SQLite returned an invalid row.");
@@ -758,6 +903,16 @@ function float32Bytes(
     }
   }
   return new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
+}
+
+function normalizedFactHash(fact: string): string {
+  const normalized = fact
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return createHash("sha256").update(normalized).digest("hex");
 }
 
 function createFtsQuery(query: string): string | null {
@@ -931,6 +1086,21 @@ export class KnosysDatabase {
         this.#database
           .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
           .run(10, new Date().toISOString());
+      });
+    }
+    if (currentVersion < 11) {
+      this.#transaction(() => {
+        this.#database.exec(MIGRATION_11);
+        // Threads excluded from memory never get summarized; excluding an
+        // already-summarized thread deletes its stored memory immediately.
+        this.#addColumnIfMissing(
+          "chat_threads",
+          "memory_excluded",
+          "INTEGER NOT NULL DEFAULT 0 CHECK(memory_excluded IN (0, 1))",
+        );
+        this.#database
+          .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(11, new Date().toISOString());
       });
     }
   }
@@ -2246,11 +2416,439 @@ export class KnosysDatabase {
     if (trimmed.length > 512) {
       throw new Error("Thread titles are limited to 512 characters.");
     }
+    return this.#transaction(() => {
+      const result = this.#database
+        .prepare("UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ?")
+        .run(trimmed, new Date().toISOString(), threadId);
+      if (Number(result.changes) === 0) return null;
+      // The thread title is part of the memory search index.
+      this.#refreshMemoryFts(threadId);
+      return this.#getThreadSummary(threadId);
+    });
+  }
+
+  public getThreadMemory(threadId: string): ThreadMemory | null {
+    requireNonEmpty(threadId, "Thread ID");
+    const row = this.#database
+      .prepare("SELECT * FROM thread_memories WHERE thread_id = ?")
+      .get(threadId);
+    return row ? this.#mapThreadMemory(row) : null;
+  }
+
+  public upsertThreadMemory(input: ThreadMemoryInput): ThreadMemory | null {
+    requireNonEmpty(input.threadId, "Thread ID");
+    requireNonEmpty(input.promptVersion, "Memory prompt version");
+    requireSafeNonNegativeInteger(input.summarizedMessageCount, "Summarized message count");
+    const summaryText = input.summaryText.trim();
+    requireNonEmpty(summaryText, "Memory summary");
+    if (summaryText.length > MAX_MEMORY_SUMMARY_CHARACTERS) {
+      throw new Error(
+        `Memory summaries are limited to ${MAX_MEMORY_SUMMARY_CHARACTERS} characters.`,
+      );
+    }
+    return this.#transaction(() => {
+      const thread = this.#database
+        .prepare("SELECT memory_excluded FROM chat_threads WHERE id = ?")
+        .get(input.threadId);
+      // A thread deleted or excluded while its summary was being generated
+      // must not have its memory (re)created.
+      if (!thread || asNumber(asRecord(thread).memory_excluded) === 1) return null;
+      const now = new Date().toISOString();
+      this.#database
+        .prepare(
+          `INSERT INTO thread_memories(
+             thread_id, summary_json, summary_text, topics_json, content_hash,
+             prompt_version, summarized_message_count, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(thread_id) DO UPDATE SET
+             summary_json = excluded.summary_json,
+             summary_text = excluded.summary_text,
+             topics_json = excluded.topics_json,
+             content_hash = excluded.content_hash,
+             prompt_version = excluded.prompt_version,
+             summarized_message_count = excluded.summarized_message_count,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          input.threadId,
+          JSON.stringify(input.summaryJson),
+          summaryText,
+          JSON.stringify(input.topics),
+          createHash("sha256").update(summaryText).digest("hex"),
+          input.promptVersion,
+          input.summarizedMessageCount,
+          now,
+          now,
+        );
+      this.#refreshMemoryFts(input.threadId);
+      const row = this.#database
+        .prepare("SELECT * FROM thread_memories WHERE thread_id = ?")
+        .get(input.threadId);
+      if (!row) throw new Error("Failed to store the thread memory.");
+      return this.#mapThreadMemory(row);
+    });
+  }
+
+  public listThreadsNeedingMemorySummary(
+    promptVersion: string,
+    limit = 8,
+  ): readonly MemorySummaryWorkItem[] {
+    requireNonEmpty(promptVersion, "Memory prompt version");
+    return this.#database
+      .prepare(
+        `SELECT t.id AS thread_id, counts.completed_count
+         FROM chat_threads t
+         JOIN (
+           SELECT thread_id, count(*) AS completed_count
+           FROM chat_messages
+           WHERE status = 'completed'
+           GROUP BY thread_id
+         ) counts ON counts.thread_id = t.id
+         LEFT JOIN thread_memories tm ON tm.thread_id = t.id
+         WHERE t.memory_excluded = 0
+           AND EXISTS (
+             SELECT 1 FROM chat_messages m
+             WHERE m.thread_id = t.id AND m.role = 'assistant' AND m.status = 'completed'
+           )
+           AND (
+             tm.thread_id IS NULL
+             OR tm.prompt_version != ?
+             OR tm.summarized_message_count < counts.completed_count
+           )
+         ORDER BY t.updated_at DESC, t.id DESC
+         LIMIT ?`,
+      )
+      .all(promptVersion, boundedLimit(limit, 100))
+      .map((raw) => {
+        const row = asRecord(raw);
+        return {
+          completedMessageCount: asNumber(row.completed_count),
+          threadId: asString(row.thread_id),
+        };
+      });
+  }
+
+  public listMemoriesNeedingEmbedding(
+    embeddingProfileId: string,
+    limit = 8,
+  ): readonly MemoryEmbeddingWorkItem[] {
+    this.#requireEmbeddingProfile(embeddingProfileId);
+    return this.#database
+      .prepare(
+        `SELECT tm.thread_id, tm.summary_text, tm.content_hash
+         FROM thread_memories tm
+         JOIN chat_threads t ON t.id = tm.thread_id
+         LEFT JOIN memory_embeddings me
+           ON me.thread_id = tm.thread_id AND me.embedding_profile_id = ?
+         WHERE t.memory_excluded = 0
+           AND (me.thread_id IS NULL OR me.content_hash != tm.content_hash)
+         ORDER BY tm.updated_at, tm.thread_id
+         LIMIT ?`,
+      )
+      .all(embeddingProfileId, boundedLimit(limit, MAX_EMBEDDING_BATCH_SIZE))
+      .map((raw) => {
+        const row = asRecord(raw);
+        return {
+          contentHash: asString(row.content_hash),
+          summaryText: asString(row.summary_text),
+          threadId: asString(row.thread_id),
+        };
+      });
+  }
+
+  public upsertMemoryEmbedding(
+    embeddingProfileId: string,
+    input: MemoryEmbeddingInput,
+  ): boolean {
+    requireNonEmpty(input.threadId, "Thread ID");
+    if (input.contentHash.length !== 64) {
+      throw new Error(`Memory for thread ${input.threadId} has an invalid content hash.`);
+    }
+    const profile = this.#requireEmbeddingProfile(embeddingProfileId);
+    const bytes = float32Bytes(input.embedding, profile.dimensions);
+    const now = new Date().toISOString();
     const result = this.#database
-      .prepare("UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ?")
-      .run(trimmed, new Date().toISOString(), threadId);
-    if (Number(result.changes) === 0) return null;
-    return this.#getThreadSummary(threadId);
+      .prepare(
+        `INSERT INTO memory_embeddings(
+          thread_id, embedding_profile_id, content_hash, embedding, created_at, updated_at
+        )
+        SELECT thread_id, ?, ?, ?, ?, ? FROM thread_memories
+        WHERE thread_id = ? AND content_hash = ?
+        ON CONFLICT(thread_id, embedding_profile_id) DO UPDATE SET
+          content_hash = excluded.content_hash,
+          embedding = excluded.embedding,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        embeddingProfileId,
+        input.contentHash,
+        bytes,
+        now,
+        now,
+        input.threadId,
+        input.contentHash,
+      );
+    // A memory deleted or re-summarized between listing and embedding is
+    // skipped; the next maintenance pass picks up the fresh content.
+    return Number(result.changes) === 1;
+  }
+
+  public searchMemoryLexical(
+    query: string,
+    limit = 20,
+    excludeThreadId: string | null = null,
+  ): readonly MemorySearchResult[] {
+    const ftsQuery = createFtsQuery(query);
+    if (!ftsQuery) return [];
+    return this.#database
+      .prepare(
+        `SELECT tm.thread_id, tm.summary_text, t.title, t.updated_at,
+                bm25(memories_fts, 0, 3, 2, 5) AS rank
+         FROM memories_fts
+         JOIN thread_memories tm ON tm.thread_id = memories_fts.thread_id
+         JOIN chat_threads t ON t.id = tm.thread_id
+         WHERE memories_fts MATCH ?
+           AND t.memory_excluded = 0
+           AND tm.thread_id != ?
+         ORDER BY rank, memories_fts.rowid
+         LIMIT ?`,
+      )
+      .all(ftsQuery, excludeThreadId ?? "", boundedLimit(limit, MAX_RETRIEVAL_RESULTS))
+      .map((raw) => {
+        const row = asRecord(raw);
+        return { ...this.#mapMemorySearchRow(row), score: -asNumber(row.rank) };
+      });
+  }
+
+  public searchMemoryVectors(
+    embeddingProfileId: string,
+    queryEmbedding: Float32Array | readonly number[],
+    limit = 20,
+    excludeThreadId: string | null = null,
+  ): readonly MemorySearchResult[] {
+    const profile = this.#requireEmbeddingProfile(embeddingProfileId);
+    const query = float32Bytes(queryEmbedding, profile.dimensions);
+    return this.#database
+      .prepare(
+        `SELECT tm.thread_id, tm.summary_text, t.title, t.updated_at,
+                vec_distance_cosine(me.embedding, ?) AS distance
+         FROM memory_embeddings me
+         JOIN thread_memories tm
+           ON tm.thread_id = me.thread_id AND tm.content_hash = me.content_hash
+         JOIN chat_threads t ON t.id = tm.thread_id
+         WHERE me.embedding_profile_id = ?
+           AND t.memory_excluded = 0
+           AND tm.thread_id != ?
+         ORDER BY distance, tm.thread_id
+         LIMIT ?`,
+      )
+      .all(
+        query,
+        embeddingProfileId,
+        excludeThreadId ?? "",
+        boundedLimit(limit, MAX_RETRIEVAL_RESULTS),
+      )
+      .map((raw) => {
+        const row = asRecord(raw);
+        return { ...this.#mapMemorySearchRow(row), score: 1 - asNumber(row.distance) };
+      });
+  }
+
+  public setThreadMemoryExclusion(
+    threadId: string,
+    excluded: boolean,
+  ): ChatThreadSummary | null {
+    requireNonEmpty(threadId, "Thread ID");
+    return this.#transaction(() => {
+      const result = this.#database
+        .prepare("UPDATE chat_threads SET memory_excluded = ?, updated_at = ? WHERE id = ?")
+        .run(excluded ? 1 : 0, new Date().toISOString(), threadId);
+      if (Number(result.changes) === 0) return null;
+      if (excluded) {
+        // Privacy scrub: cascades remove embeddings, the trigger removes the
+        // FTS row, and secure_delete overwrites the freed pages.
+        this.#database
+          .prepare("DELETE FROM thread_memories WHERE thread_id = ?")
+          .run(threadId);
+      }
+      return this.#getThreadSummary(threadId);
+    });
+  }
+
+  public getMemoryStatus(promptVersion: string): MemoryStatus {
+    requireNonEmpty(promptVersion, "Memory prompt version");
+    const counts = asRecord(
+      this.#database
+        .prepare(
+          `SELECT
+             (SELECT count(*) FROM user_facts WHERE status = 'active') AS fact_count,
+             (SELECT count(*) FROM thread_memories) AS summarized_count,
+             (SELECT count(*) FROM chat_threads WHERE memory_excluded = 1) AS excluded_count`,
+        )
+        .get(),
+    );
+    return {
+      excludedThreadCount: asNumber(counts.excluded_count),
+      factCount: asNumber(counts.fact_count),
+      staleThreadCount: this.listThreadsNeedingMemorySummary(promptVersion, 100).length,
+      summarizedThreadCount: asNumber(counts.summarized_count),
+    };
+  }
+
+  public listUserFacts(): readonly UserFact[] {
+    return this.#database
+      .prepare("SELECT * FROM user_facts WHERE status = 'active' ORDER BY created_at, rowid")
+      .all()
+      .map((row) => this.#mapUserFact(row));
+  }
+
+  public insertExtractedUserFact(input: NewExtractedUserFact): UserFact | null {
+    const fact = input.fact.trim();
+    requireNonEmpty(fact, "User fact");
+    if (fact.length > MAX_USER_FACT_CHARACTERS) {
+      throw new Error(`User facts are limited to ${MAX_USER_FACT_CHARACTERS} characters.`);
+    }
+    if (!USER_FACT_CATEGORIES.includes(input.category)) {
+      throw new Error(`Unknown user fact category: ${input.category}.`);
+    }
+    const hash = normalizedFactHash(fact);
+    return this.#transaction(() => {
+      // A matching hash on any row — active, tombstoned, or user-edited —
+      // blocks re-extraction.
+      const existing = this.#database
+        .prepare("SELECT 1 FROM user_facts WHERE normalized_hash = ?")
+        .get(hash);
+      if (existing) return null;
+      const activeCount = asNumber(
+        asRecord(
+          this.#database
+            .prepare("SELECT count(*) AS count FROM user_facts WHERE status = 'active'")
+            .get(),
+        ).count,
+      );
+      if (activeCount >= MAX_ACTIVE_USER_FACTS) {
+        // Evict the oldest extracted fact to make room; facts the user wrote
+        // or edited are never evicted. Eviction is a hard delete (not a
+        // tombstone) so the fact may legitimately come back later.
+        const evictable = this.#database
+          .prepare(
+            `SELECT id FROM user_facts
+             WHERE status = 'active' AND origin = 'extracted'
+             ORDER BY created_at, rowid LIMIT 1`,
+          )
+          .get();
+        if (!evictable) return null;
+        this.#database
+          .prepare("DELETE FROM user_facts WHERE id = ?")
+          .run(asString(asRecord(evictable).id));
+      }
+      const now = new Date().toISOString();
+      const id = randomUUID();
+      this.#database
+        .prepare(
+          `INSERT INTO user_facts(
+             id, fact, normalized_hash, category, origin, status,
+             source_thread_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 'extracted', 'active', ?, ?, ?)`,
+        )
+        .run(id, fact, hash, input.category, input.sourceThreadId, now, now);
+      const row = this.#database.prepare("SELECT * FROM user_facts WHERE id = ?").get(id);
+      if (!row) throw new Error("Failed to store the user fact.");
+      return this.#mapUserFact(row);
+    });
+  }
+
+  public updateUserFact(factId: string, fact: string): UserFact | null {
+    requireNonEmpty(factId, "Fact ID");
+    const trimmed = fact.trim();
+    requireNonEmpty(trimmed, "User fact");
+    if (trimmed.length > MAX_USER_FACT_CHARACTERS) {
+      throw new Error(`User facts are limited to ${MAX_USER_FACT_CHARACTERS} characters.`);
+    }
+    const hash = normalizedFactHash(trimmed);
+    return this.#transaction(() => {
+      const conflict = this.#database
+        .prepare("SELECT 1 FROM user_facts WHERE normalized_hash = ? AND id != ?")
+        .get(hash, factId);
+      if (conflict) throw new Error("An equivalent memory already exists.");
+      const result = this.#database
+        .prepare(
+          `UPDATE user_facts
+           SET fact = ?, normalized_hash = ?, origin = 'user', updated_at = ?
+           WHERE id = ? AND status = 'active'`,
+        )
+        .run(trimmed, hash, new Date().toISOString(), factId);
+      if (Number(result.changes) === 0) return null;
+      const row = this.#database.prepare("SELECT * FROM user_facts WHERE id = ?").get(factId);
+      return row ? this.#mapUserFact(row) : null;
+    });
+  }
+
+  public deleteUserFact(factId: string): boolean {
+    requireNonEmpty(factId, "Fact ID");
+    // Tombstone rather than delete so the fact is never re-extracted.
+    const result = this.#database
+      .prepare(
+        `UPDATE user_facts SET status = 'deleted', updated_at = ?
+         WHERE id = ? AND status = 'active'`,
+      )
+      .run(new Date().toISOString(), factId);
+    return Number(result.changes) > 0;
+  }
+
+  #refreshMemoryFts(threadId: string): void {
+    this.#database.prepare("DELETE FROM memories_fts WHERE thread_id = ?").run(threadId);
+    const row = this.#database
+      .prepare(
+        `SELECT tm.summary_text, tm.topics_json, t.title
+         FROM thread_memories tm
+         JOIN chat_threads t ON t.id = tm.thread_id
+         WHERE tm.thread_id = ?`,
+      )
+      .get(threadId);
+    if (!row) return;
+    const record = asRecord(row);
+    const topics = parseJson<readonly string[]>(record.topics_json, "memory topics");
+    this.#database
+      .prepare("INSERT INTO memories_fts(thread_id, title, topics, content) VALUES (?, ?, ?, ?)")
+      .run(threadId, asString(record.title), topics.join("\n"), asString(record.summary_text));
+  }
+
+  #mapThreadMemory(raw: unknown): ThreadMemory {
+    const row = asRecord(raw);
+    return {
+      contentHash: asString(row.content_hash),
+      createdAt: asString(row.created_at),
+      promptVersion: asString(row.prompt_version),
+      summarizedMessageCount: asNumber(row.summarized_message_count),
+      summaryJson: parseJsonObject(row.summary_json, "memory summary"),
+      summaryText: asString(row.summary_text),
+      threadId: asString(row.thread_id),
+      topics: parseJson<readonly string[]>(row.topics_json, "memory topics"),
+      updatedAt: asString(row.updated_at),
+    };
+  }
+
+  #mapMemorySearchRow(row: Record<string, unknown>): Omit<MemorySearchResult, "score"> {
+    return {
+      content: asString(row.summary_text),
+      threadId: asString(row.thread_id),
+      threadTitle: asString(row.title),
+      threadUpdatedAt: asString(row.updated_at),
+    };
+  }
+
+  #mapUserFact(raw: unknown): UserFact {
+    const row = asRecord(raw);
+    return {
+      category: asString(row.category) as UserFactCategory,
+      createdAt: asString(row.created_at),
+      fact: asString(row.fact),
+      id: asString(row.id),
+      origin: asString(row.origin) as UserFactOrigin,
+      sourceThreadId: asNullableString(row.source_thread_id),
+      updatedAt: asString(row.updated_at),
+    };
   }
 
   public setSelectedEmbeddingProfile(embeddingProfileId: string | null): void {
@@ -2657,6 +3255,7 @@ export class KnosysDatabase {
       id: asString(row.id),
       lastMessageAt: asNullableString(row.last_message_at),
       lastMessagePreview: asNullableString(row.last_message_preview),
+      memoryExcluded: asNumber(row.memory_excluded) === 1,
       messageCount: asNumber(row.message_count),
       title: asString(row.title),
       updatedAt: asString(row.updated_at),

@@ -10,6 +10,7 @@ import {
   type AnswerStreamRequest,
   type ClaimReconciliationRequest,
   type ClosedBookAnswerRequest,
+  type ThreadSummaryRequest,
   type EvidenceFirstAnswerRequest,
   type EvidenceFirstAnswerStreamEvent,
   type EvidenceFirstVerificationRequest,
@@ -260,6 +261,16 @@ class DeterministicEvaluationProvider implements RagInferenceProvider {
     return {
       answer: "Deterministic evaluation background.",
       claims: [{ text: "Deterministic evaluation background." }],
+      version: 1 as const,
+    };
+  }
+
+  public async summarizeThread(request: ThreadSummaryRequest) {
+    return {
+      conclusions: [],
+      keyQuestions: [],
+      topics: [request.threadTitle],
+      userFacts: [],
       version: 1 as const,
     };
   }

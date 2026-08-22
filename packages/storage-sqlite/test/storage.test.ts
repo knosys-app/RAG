@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,7 +149,7 @@ describe("canonical SQLite storage", () => {
     const threadColumns = raw.prepare("PRAGMA table_info(chat_threads)").all() as {
       name: string;
     }[];
-    expect(migration.version).toBe(10);
+    expect(migration.version).toBe(11);
     expect(chatColumns.map(({ name }) => name)).toContain("answer_provenance_json");
     expect(threadColumns.map(({ name }) => name)).toContain("folder_id");
     expect(tables).toHaveLength(8);
@@ -165,6 +166,13 @@ describe("canonical SQLite storage", () => {
 
     const downgrade = new DatabaseSync(sourcePath);
     downgrade.exec(`
+      DROP TRIGGER thread_memories_fts_delete;
+      DROP TRIGGER memory_embeddings_dimensions_update;
+      DROP TRIGGER memory_embeddings_dimensions_insert;
+      DROP TABLE memory_embeddings;
+      DROP TABLE thread_memories;
+      DROP TABLE memories_fts;
+      DROP TABLE user_facts;
       DROP TRIGGER chat_citations_immutable_update;
       DROP TABLE selected_model_settings;
       DROP TABLE chat_citations;
@@ -198,6 +206,14 @@ describe("canonical SQLite storage", () => {
 
     const schema7 = new DatabaseSync(sourcePath);
     schema7.exec(`
+      DROP TRIGGER thread_memories_fts_delete;
+      DROP TRIGGER memory_embeddings_dimensions_update;
+      DROP TRIGGER memory_embeddings_dimensions_insert;
+      DROP TABLE memory_embeddings;
+      DROP TABLE thread_memories;
+      DROP TABLE memories_fts;
+      DROP TABLE user_facts;
+      ALTER TABLE chat_threads DROP COLUMN memory_excluded;
       DROP INDEX chat_threads_folder_updated_idx;
       ALTER TABLE chat_threads DROP COLUMN folder_id;
       DROP TABLE chat_folders;
@@ -218,7 +234,7 @@ describe("canonical SQLite storage", () => {
       (check.prepare("SELECT max(version) AS version FROM schema_migrations").get() as {
         version: number;
       }).version,
-    ).toBe(10);
+    ).toBe(11);
     check.close();
     await rm(root, { recursive: true });
   });
@@ -861,6 +877,262 @@ describe("canonical SQLite storage", () => {
         { chunkId: work.chunkId, contentHash: work.contentHash, embedding: [1, 0, 0] },
       ]),
     ).toBe(0);
+    database.close();
+  });
+});
+
+describe("conversation memory storage", () => {
+  function seedCompletedThread(database: KnosysDatabase, title: string, answer: string) {
+    const run = database.createChatRun({ threadTitle: title, userContent: `About ${title}?` });
+    database.completeChatRun(run.runId, { content: answer });
+    return run.thread.id;
+  }
+
+  function memoryInput(threadId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      promptVersion: "thread-memory-summary-v1",
+      summarizedMessageCount: 2,
+      summaryJson: { conclusions: [], keyQuestions: [], topics: ["seed saving"], version: 1 },
+      summaryText: "Topics: seed saving | Conclusions: store dry seeds somewhere cool.",
+      threadId,
+      topics: ["seed saving"],
+      ...overrides,
+    };
+  }
+
+  it("tracks which threads need a memory summary as they grow or prompts change", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const threadId = seedCompletedThread(database, "Seed saving", "Keep seeds cool and dry.");
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([
+      { completedMessageCount: 2, threadId },
+    ]);
+
+    expect(database.upsertThreadMemory(memoryInput(threadId))).toMatchObject({
+      contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      summarizedMessageCount: 2,
+      threadId,
+    });
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([]);
+
+    const followUp = database.createChatRun({ threadId, userContent: "And melon seeds?" });
+    database.completeChatRun(followUp.runId, { content: "Rinse and dry them first." });
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([
+      { completedMessageCount: 4, threadId },
+    ]);
+
+    database.upsertThreadMemory(memoryInput(threadId, { summarizedMessageCount: 4 }));
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([]);
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v2")).toEqual([
+      { completedMessageCount: 4, threadId },
+    ]);
+
+    const pending = database.createChatRun({ userContent: "No answer yet" });
+    expect(
+      database
+        .listThreadsNeedingMemorySummary("thread-memory-summary-v1")
+        .some((item) => item.threadId === pending.thread.id),
+    ).toBe(false);
+    database.close();
+  });
+
+  it("excludes threads from memory and scrubs their stored summaries", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const threadId = seedCompletedThread(database, "Pumpkin planting", "Plant after last frost.");
+    database.upsertThreadMemory(
+      memoryInput(threadId, {
+        summaryText: "Topics: pumpkin planting | Conclusions: plant after the last frost.",
+        topics: ["pumpkin planting"],
+      }),
+    );
+    expect(database.searchMemoryLexical("pumpkin")).toHaveLength(1);
+
+    const excluded = database.setThreadMemoryExclusion(threadId, true);
+    expect(excluded?.memoryExcluded).toBe(true);
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(database.searchMemoryLexical("pumpkin")).toEqual([]);
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([]);
+    expect(database.upsertThreadMemory(memoryInput(threadId))).toBeNull();
+
+    const included = database.setThreadMemoryExclusion(threadId, false);
+    expect(included?.memoryExcluded).toBe(false);
+    expect(database.listThreadsNeedingMemorySummary("thread-memory-summary-v1")).toEqual([
+      { completedMessageCount: 2, threadId },
+    ]);
+    expect(database.setThreadMemoryExclusion(randomUUID(), true)).toBeNull();
+    database.close();
+  });
+
+  it("searches memories lexically and by vector, excluding the current thread", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const profile = database.registerEmbeddingProfile(embeddingProfileInput);
+    const seedThread = seedCompletedThread(database, "Seed saving", "Keep them dry.");
+    const soilThread = seedCompletedThread(database, "Soil health", "Compost feeds the soil.");
+    database.upsertThreadMemory(memoryInput(seedThread));
+    database.upsertThreadMemory(
+      memoryInput(soilThread, {
+        summaryText: "Topics: soil health | Conclusions: compost feeds the soil biome.",
+        topics: ["soil health"],
+      }),
+    );
+
+    const work = database.listMemoriesNeedingEmbedding(profile.id);
+    expect(work.map(({ threadId }) => threadId).sort()).toEqual([seedThread, soilThread].sort());
+    for (const item of work) {
+      const embedding = item.threadId === seedThread ? [1, 0, 0] : [0, 1, 0];
+      expect(database.upsertMemoryEmbedding(profile.id, { ...item, embedding })).toBe(true);
+    }
+    expect(database.listMemoriesNeedingEmbedding(profile.id)).toEqual([]);
+
+    const vectorHits = database.searchMemoryVectors(profile.id, [1, 0, 0], 5);
+    expect(vectorHits[0]).toMatchObject({ threadId: seedThread, threadTitle: "Seed saving" });
+    expect(vectorHits[0]!.score).toBeGreaterThan(vectorHits[1]!.score);
+    expect(
+      database
+        .searchMemoryVectors(profile.id, [1, 0, 0], 5, seedThread)
+        .map(({ threadId }) => threadId),
+    ).toEqual([soilThread]);
+
+    expect(database.searchMemoryLexical("soil compost")[0]?.threadId).toBe(soilThread);
+    expect(database.searchMemoryLexical("soil", 5, soilThread)).toEqual([]);
+
+    // Renaming a thread must keep the memory search index in sync.
+    database.renameChatThread(seedThread, "Heirloom tomato seeds");
+    expect(database.searchMemoryLexical("heirloom tomato")[0]?.threadId).toBe(seedThread);
+
+    // A stale hash means the summary changed since listing; the upsert is skipped.
+    expect(
+      database.upsertMemoryEmbedding(profile.id, {
+        contentHash: "f".repeat(64),
+        embedding: [0, 0, 1],
+        threadId: seedThread,
+      }),
+    ).toBe(false);
+    database.close();
+  });
+
+  it("re-lists memories for embedding when the summary content changes", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const profile = database.registerEmbeddingProfile(embeddingProfileInput);
+    const threadId = seedCompletedThread(database, "Seed saving", "Keep them dry.");
+    database.upsertThreadMemory(memoryInput(threadId));
+    const [work] = database.listMemoriesNeedingEmbedding(profile.id);
+    if (!work) throw new Error("Expected a memory needing embedding.");
+    database.upsertMemoryEmbedding(profile.id, { ...work, embedding: [1, 0, 0] });
+
+    database.upsertThreadMemory(memoryInput(threadId));
+    expect(database.listMemoriesNeedingEmbedding(profile.id)).toEqual([]);
+
+    database.upsertThreadMemory(
+      memoryInput(threadId, { summaryText: "Topics: seed saving | Updated conclusions." }),
+    );
+    expect(database.listMemoriesNeedingEmbedding(profile.id)).toHaveLength(1);
+    expect(database.searchMemoryVectors(profile.id, [1, 0, 0], 5)).toEqual([]);
+    database.close();
+  });
+
+  it("cascades memory rows when a thread is deleted", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const profile = database.registerEmbeddingProfile(embeddingProfileInput);
+    const threadId = seedCompletedThread(database, "Seed saving", "Keep them dry.");
+    database.upsertThreadMemory(memoryInput(threadId));
+    const [work] = database.listMemoriesNeedingEmbedding(profile.id);
+    if (!work) throw new Error("Expected a memory needing embedding.");
+    database.upsertMemoryEmbedding(profile.id, { ...work, embedding: [1, 0, 0] });
+
+    expect(database.deleteChatThread(threadId)).toBe(true);
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(database.searchMemoryLexical("seed")).toEqual([]);
+    expect(database.searchMemoryVectors(profile.id, [1, 0, 0], 5)).toEqual([]);
+    database.close();
+  });
+
+  it("deduplicates, caps, edits, and tombstones user facts", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const first = database.insertExtractedUserFact({
+      category: "project",
+      fact: "Writing a book about heirloom gardening.",
+      sourceThreadId: null,
+    });
+    expect(first).toMatchObject({ category: "project", origin: "extracted" });
+    expect(
+      database.insertExtractedUserFact({
+        category: "project",
+        fact: "  writing a BOOK about heirloom gardening ",
+        sourceThreadId: null,
+      }),
+    ).toBeNull();
+
+    const edited = database.updateUserFact(first!.id, "Writing a novel about gardening.");
+    expect(edited).toMatchObject({ origin: "user" });
+    expect(database.updateUserFact(randomUUID(), "Whatever")).toBeNull();
+
+    expect(database.deleteUserFact(first!.id)).toBe(true);
+    expect(database.deleteUserFact(first!.id)).toBe(false);
+    expect(database.listUserFacts()).toEqual([]);
+    // A tombstoned fact never comes back through extraction.
+    expect(
+      database.insertExtractedUserFact({
+        category: "project",
+        fact: "Writing a novel about gardening!",
+        sourceThreadId: null,
+      }),
+    ).toBeNull();
+
+    for (let index = 0; index < 32; index += 1) {
+      expect(
+        database.insertExtractedUserFact({
+          category: "other",
+          fact: `Fact number ${index}`,
+          sourceThreadId: null,
+        }),
+      ).not.toBeNull();
+    }
+    expect(database.listUserFacts()).toHaveLength(32);
+    // The cap evicts the oldest extracted fact to admit a new one.
+    expect(
+      database.insertExtractedUserFact({
+        category: "other",
+        fact: "One fact too many",
+        sourceThreadId: null,
+      }),
+    ).not.toBeNull();
+    const facts = database.listUserFacts();
+    expect(facts).toHaveLength(32);
+    expect(facts.some(({ fact }) => fact === "Fact number 0")).toBe(false);
+    expect(facts.some(({ fact }) => fact === "One fact too many")).toBe(true);
+    // Eviction is a hard delete, so the evicted fact may be extracted again later.
+    expect(database.deleteUserFact(facts[0]!.id)).toBe(true);
+    expect(
+      database.insertExtractedUserFact({
+        category: "other",
+        fact: "Fact number 0",
+        sourceThreadId: null,
+      }),
+    ).not.toBeNull();
+    database.close();
+  });
+
+  it("summarizes memory status counts", () => {
+    const database = new KnosysDatabase(":memory:", vectorExtensionPath);
+    const summarized = seedCompletedThread(database, "Seed saving", "Keep them dry.");
+    const stale = seedCompletedThread(database, "Soil health", "Compost feeds the soil.");
+    const excluded = seedCompletedThread(database, "Private topic", "Kept out of memory.");
+    database.upsertThreadMemory(memoryInput(summarized));
+    database.setThreadMemoryExclusion(excluded, true);
+    database.insertExtractedUserFact({
+      category: "preference",
+      fact: "Prefers metric units.",
+      sourceThreadId: summarized,
+    });
+    expect(database.getMemoryStatus("thread-memory-summary-v1")).toEqual({
+      excludedThreadCount: 1,
+      factCount: 1,
+      staleThreadCount: 1,
+      summarizedThreadCount: 1,
+    });
+    expect(
+      database.listThreadsNeedingMemorySummary("thread-memory-summary-v1"),
+    ).toEqual([{ completedMessageCount: 2, threadId: stale }]);
     database.close();
   });
 });

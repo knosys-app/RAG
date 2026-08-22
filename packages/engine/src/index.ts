@@ -45,9 +45,11 @@ import {
   generationModelIncompatibility,
   generationProfileForModel,
   InferenceError,
+  MEMORY_SUMMARY_PROMPT_VERSION,
   OllamaAdapter,
   QUERY_EMBEDDING_INSTRUCTION_VERSION,
   QUESTION_CONTEXTUALIZATION_VERSION,
+  THREAD_SUMMARY_RESULT_SCHEMA,
   UNCONFIGURED_GENERATION_PROFILE,
   type AnswerStreamProvider,
   type CanonicalLibraryClaim,
@@ -69,6 +71,8 @@ import {
   type ModelDescriptor,
   type ModelPullProgress,
   type QuestionContextualizer,
+  type ThreadSummaryProvider,
+  type ThreadSummaryResult,
 } from "@knosys-rag/inference";
 import {
   GROUNDED_DERIVATION_GUIDANCE_VERSION,
@@ -104,6 +108,7 @@ import {
   type EmbeddingProfile,
   type EvidenceResult,
   type LibrarySnapshot,
+  type MemorySummaryWorkItem,
   type SearchResult,
   type SemanticIndexJob,
   type SourceBlock,
@@ -119,6 +124,12 @@ const MAX_CONVERSATION_HISTORY_CHARACTERS = 8_000;
 const MAX_CONVERSATION_HISTORY_MESSAGE_CHARACTERS = 3_000;
 const MAX_CONVERSATION_HISTORY_MESSAGES = 8;
 const MAX_CONTEXTUALIZED_QUESTION_CHARACTERS = 8_000;
+const MEMORY_MAINTENANCE_BATCH_SIZE = 16;
+const MEMORY_EMBEDDING_BATCH_SIZE = 32;
+const MAX_MEMORY_SOURCE_MESSAGES = 16;
+const MAX_MEMORY_SOURCE_CHARACTERS = 16_000;
+const MAX_MEMORY_SOURCE_MESSAGE_CHARACTERS = 3_000;
+const MEMORY_SUMMARY_TEXT_CHARACTERS = 2_000;
 const MODEL_PULL_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const MODEL_PULL_PROGRESS_STEP_BYTES = 8 * MEBIBYTE;
 
@@ -172,7 +183,8 @@ export interface RagInferenceProvider
     ClosedBookAnswerProvider,
     ClaimReconciliationProvider,
     HybridSynthesisProvider,
-    HybridSynthesisVerificationProvider {
+    HybridSynthesisVerificationProvider,
+    ThreadSummaryProvider {
   describeModel(
     model: string,
     options?: InferenceRequestOptions,
@@ -215,13 +227,15 @@ export interface KnowledgeEngineOptions {
     ClosedBookAnswerProvider &
     ClaimReconciliationProvider &
     HybridSynthesisProvider &
-    HybridSynthesisVerificationProvider;
+    HybridSynthesisVerificationProvider &
+    ThreadSummaryProvider;
   readonly hybridSynthesisProvider?: HybridSynthesisProvider;
   readonly hybridSynthesisVerificationProvider?: HybridSynthesisVerificationProvider;
   readonly inferenceProvider?: RagInferenceProvider;
   readonly modelProvider?: RagModelProvider;
   readonly planProvider?: GroundedPlanProvider;
   readonly questionContextualizer?: QuestionContextualizer;
+  readonly threadSummaryProvider?: ThreadSummaryProvider;
 }
 
 export type RagRuntimeUnavailableReason =
@@ -757,9 +771,14 @@ function isStoredSourceLocator(value: unknown): value is StoredSourceLocator {
   );
 }
 
-function recentConversationHistory(
+function selectConversationHistory(
   messages: readonly ChatMessage[],
   beforeOrdinal: number,
+  limits: {
+    readonly maxCharacters: number;
+    readonly maxMessageCharacters: number;
+    readonly maxMessages: number;
+  },
 ): readonly ConversationMessage[] {
   const eligible = messages.filter(
     (message) =>
@@ -773,19 +792,65 @@ function recentConversationHistory(
   const history: ConversationMessage[] = [];
   let characters = 0;
   for (let index = eligible.length - 1; index >= 0; index -= 1) {
-    if (history.length >= MAX_CONVERSATION_HISTORY_MESSAGES) break;
+    if (history.length >= limits.maxMessages) break;
     const message = eligible[index];
     if (message === undefined) continue;
-    const remaining = MAX_CONVERSATION_HISTORY_CHARACTERS - characters;
+    const remaining = limits.maxCharacters - characters;
     if (remaining <= 0) break;
     const content = message.content
       .trim()
-      .slice(0, Math.min(remaining, MAX_CONVERSATION_HISTORY_MESSAGE_CHARACTERS));
+      .slice(0, Math.min(remaining, limits.maxMessageCharacters));
     if (content.length === 0) continue;
     history.unshift({ content, role: message.role });
     characters += content.length;
   }
   return history;
+}
+
+function recentConversationHistory(
+  messages: readonly ChatMessage[],
+  beforeOrdinal: number,
+): readonly ConversationMessage[] {
+  return selectConversationHistory(messages, beforeOrdinal, {
+    maxCharacters: MAX_CONVERSATION_HISTORY_CHARACTERS,
+    maxMessageCharacters: MAX_CONVERSATION_HISTORY_MESSAGE_CHARACTERS,
+    maxMessages: MAX_CONVERSATION_HISTORY_MESSAGES,
+  });
+}
+
+// The transcript slice a thread memory is distilled from: the same eligibility
+// rules as conversation history, with a larger budget covering the whole tail
+// of the thread.
+function memorySourceHistory(
+  messages: readonly ChatMessage[],
+): readonly ConversationMessage[] {
+  return selectConversationHistory(messages, Number.POSITIVE_INFINITY, {
+    maxCharacters: MAX_MEMORY_SOURCE_CHARACTERS,
+    maxMessageCharacters: MAX_MEMORY_SOURCE_MESSAGE_CHARACTERS,
+    maxMessages: MAX_MEMORY_SOURCE_MESSAGES,
+  });
+}
+
+// The deterministic rendering of a thread summary: the exact text that is
+// indexed for lexical search, embedded, and later injected into prompts.
+function renderMemorySummaryText(summary: ThreadSummaryResult): string {
+  const parts = [
+    `Topics: ${summary.topics.join("; ")}`,
+    ...(summary.keyQuestions.length > 0
+      ? [`Questions: ${summary.keyQuestions.join(" | ")}`]
+      : []),
+    ...(summary.conclusions.length > 0
+      ? [`Conclusions: ${summary.conclusions.join(" | ")}`]
+      : []),
+  ];
+  return parts.join("\n").slice(0, MEMORY_SUMMARY_TEXT_CHARACTERS);
+}
+
+// A stored summary written by an older prompt version may not parse against
+// the current shape; the summarizer then simply starts fresh.
+function parseStoredThreadSummary(summaryJson: object): ThreadSummaryResult | null {
+  const parsed = THREAD_SUMMARY_RESULT_SCHEMA.safeParse(summaryJson);
+  return parsed.success ? parsed.data : null;
 }
 
 function rethrowIfAborted(error: unknown, signal: AbortSignal): void {
@@ -815,7 +880,8 @@ export class KnowledgeEngine {
     ClosedBookAnswerProvider &
     ClaimReconciliationProvider &
     HybridSynthesisProvider &
-    HybridSynthesisVerificationProvider;
+    HybridSynthesisVerificationProvider &
+    ThreadSummaryProvider;
   readonly #database: KnosysDatabase;
   readonly #libraryRoot: string;
   readonly #modelProvider: RagModelProvider;
@@ -837,6 +903,10 @@ export class KnowledgeEngine {
   #questionContextualizer: QuestionContextualizer;
   #hybridSynthesisProvider: HybridSynthesisProvider;
   #hybridSynthesisVerificationProvider: HybridSynthesisVerificationProvider;
+  #memoryController: AbortController | null = null;
+  #memoryPromise: Promise<void> | null = null;
+  #memoryRequested = false;
+  #threadSummaryProvider: ThreadSummaryProvider;
   #runtime: RagRuntimeStatus = {
     installDetected: false,
     provider: "ollama",
@@ -881,6 +951,7 @@ export class KnowledgeEngine {
     this.#hybridSynthesisProvider = options.hybridSynthesisProvider ?? defaultProvider;
     this.#hybridSynthesisVerificationProvider =
       options.hybridSynthesisVerificationProvider ?? defaultProvider;
+    this.#threadSummaryProvider = options.threadSummaryProvider ?? defaultProvider;
     this.#generationProviderFactory =
       options.generationProviderFactory ??
       ((profile) => {
@@ -895,7 +966,8 @@ export class KnowledgeEngine {
           options.closedBookAnswerProvider !== undefined ||
           options.claimReconciliationProvider !== undefined ||
           options.hybridSynthesisProvider !== undefined ||
-          options.hybridSynthesisVerificationProvider !== undefined
+          options.hybridSynthesisVerificationProvider !== undefined ||
+          options.threadSummaryProvider !== undefined
         ) {
           const planProvider = options.planProvider ?? defaultProvider;
           const answerabilityProvider = options.answerabilityProvider ?? defaultProvider;
@@ -913,6 +985,7 @@ export class KnowledgeEngine {
               options.hybridSynthesisProvider ?? defaultProvider;
           const hybridSynthesisVerificationProvider =
               options.hybridSynthesisVerificationProvider ?? defaultProvider;
+          const threadSummaryProvider = options.threadSummaryProvider ?? defaultProvider;
           return {
              generationProfile: profile,
             assessGroundedAnswerability: (request, requestOptions) =>
@@ -949,6 +1022,8 @@ export class KnowledgeEngine {
               ),
             streamAnswer: (request, requestOptions) =>
               answerStreamProvider.streamAnswer(request, requestOptions),
+            summarizeThread: (request, requestOptions) =>
+              threadSummaryProvider.summarizeThread(request, requestOptions),
           };
         }
         return new OllamaAdapter({
@@ -976,6 +1051,7 @@ export class KnowledgeEngine {
     if (this.#closed) return;
     this.#closed = true;
     this.#backfillController?.abort();
+    this.#memoryController?.abort();
     for (const controller of this.#activePulls.values()) controller.abort();
     this.#activePulls.clear();
     for (const runId of [...this.#activeChatRuns.keys()]) {
@@ -1063,6 +1139,8 @@ export class KnowledgeEngine {
     ) {
       this.#startBackfill();
     }
+    // Threads that finished in earlier sessions may still need summarizing.
+    this.#startMemoryMaintenance();
     return this.getRagStatus();
   }
 
@@ -1697,6 +1775,7 @@ export class KnowledgeEngine {
     this.#claimReconciliationProvider = provider;
     this.#hybridSynthesisProvider = provider;
     this.#hybridSynthesisVerificationProvider = provider;
+    this.#threadSummaryProvider = provider;
   }
 
   #startBackfill(): void {
@@ -1815,6 +1894,156 @@ export class KnowledgeEngine {
         status: signal.aborted ? "cancelled" : "failed",
         totalChunks,
       });
+    }
+  }
+
+  // Background distillation of finished conversations into retrievable
+  // memories. Single-flight like the embedding backfill: concurrent triggers
+  // coalesce into one re-run after the current pass finishes.
+  #startMemoryMaintenance(): void {
+    if (
+      this.#closed ||
+      this.#runtime.state !== "available" ||
+      this.#database.getSelectedModelSettings().generationModel === null
+    ) {
+      return;
+    }
+    if (this.#memoryPromise !== null) {
+      this.#memoryRequested = true;
+      return;
+    }
+    this.#memoryRequested = false;
+    const controller = new AbortController();
+    this.#memoryController = controller;
+    const maintenance = this.#runMemoryMaintenance(controller.signal);
+    this.#memoryPromise = maintenance;
+    const cleanup = () => {
+      if (this.#memoryPromise === maintenance) {
+        this.#memoryController = null;
+        this.#memoryPromise = null;
+        if (this.#memoryRequested) this.#startMemoryMaintenance();
+      }
+    };
+    void maintenance.then(cleanup, cleanup);
+  }
+
+  async #runMemoryMaintenance(signal: AbortSignal): Promise<void> {
+    // Memory is strictly best-effort: a failed pass leaves threads stale and
+    // the next trigger retries them; chat must never be affected.
+    try {
+      const failedThreadIds = new Set<string>();
+      while (true) {
+        signal.throwIfAborted();
+        // Summarization shares the local inference server with live chats;
+        // yield whenever one is active. The finishing run's own trigger
+        // resumes maintenance, so no self-retrigger here.
+        if (this.#activeChatRuns.size > 0) return;
+        const work = this.#database
+          .listThreadsNeedingMemorySummary(
+            MEMORY_SUMMARY_PROMPT_VERSION,
+            MEMORY_MAINTENANCE_BATCH_SIZE,
+          )
+          .filter((item) => !failedThreadIds.has(item.threadId));
+        if (work.length === 0) break;
+        for (const item of work) {
+          signal.throwIfAborted();
+          if (this.#activeChatRuns.size > 0) return;
+          try {
+            await this.#summarizeThreadMemory(item, signal);
+          } catch (error) {
+            rethrowIfAborted(error, signal);
+            failedThreadIds.add(item.threadId);
+          }
+        }
+      }
+      await this.#embedPendingMemories(signal);
+    } catch (error) {
+      rethrowIfAborted(error, signal);
+    }
+  }
+
+  async #summarizeThreadMemory(
+    item: MemorySummaryWorkItem,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const thread = this.#database.getChatThread(item.threadId);
+    if (thread === null || thread.memoryExcluded) return;
+    const messages = memorySourceHistory(thread.messages);
+    if (messages.length === 0) return;
+    const prior = this.#database.getThreadMemory(item.threadId);
+    const knownFacts = this.#database.listUserFacts().map(({ fact }) => fact);
+    const summary = await this.#threadSummaryProvider.summarizeThread(
+      {
+        knownFacts,
+        messages,
+        priorSummary: prior === null ? null : parseStoredThreadSummary(prior.summaryJson),
+        threadTitle: thread.title,
+      },
+      { signal },
+    );
+    signal.throwIfAborted();
+    const completedMessageCount = thread.messages.filter(
+      ({ status }) => status === "completed",
+    ).length;
+    const stored = this.#database.upsertThreadMemory({
+      promptVersion: MEMORY_SUMMARY_PROMPT_VERSION,
+      summarizedMessageCount: completedMessageCount,
+      summaryJson: summary,
+      summaryText: renderMemorySummaryText(summary),
+      threadId: item.threadId,
+      topics: summary.topics,
+    });
+    // A thread deleted or excluded mid-summarization stores nothing, and its
+    // fact candidates are discarded with it.
+    if (stored === null) return;
+    for (const candidate of summary.userFacts) {
+      try {
+        this.#database.insertExtractedUserFact({
+          category: candidate.category,
+          fact: candidate.fact,
+          sourceThreadId: item.threadId,
+        });
+      } catch {
+        // An invalid candidate never blocks the rest of the summary.
+      }
+    }
+  }
+
+  async #embedPendingMemories(signal: AbortSignal): Promise<void> {
+    const profile = this.#embeddingProfile;
+    // Without an embedding profile summaries still exist; recall degrades to
+    // lexical search until embeddings become available.
+    if (profile === null) return;
+    while (true) {
+      signal.throwIfAborted();
+      const work = this.#database.listMemoriesNeedingEmbedding(
+        profile.id,
+        MEMORY_EMBEDDING_BATCH_SIZE,
+      );
+      if (work.length === 0) return;
+      const embeddings = await this.#embeddingProvider.embedDocuments(
+        work.map(({ summaryText }) => summaryText),
+        { signal },
+      );
+      signal.throwIfAborted();
+      if (embeddings.length !== work.length) return;
+      let stored = 0;
+      work.forEach((item, index) => {
+        const embedding = embeddings[index];
+        if (embedding === undefined) return;
+        if (
+          this.#database.upsertMemoryEmbedding(profile.id, {
+            contentHash: item.contentHash,
+            embedding,
+            threadId: item.threadId,
+          })
+        ) {
+          stored += 1;
+        }
+      });
+      // Nothing stored means every listed memory drifted or vanished; stop
+      // rather than spin, and let the next pass pick up the fresh state.
+      if (stored === 0) return;
     }
   }
 
@@ -1955,6 +2184,9 @@ export class KnowledgeEngine {
       if (this.#activeChatRuns.get(active.runId) === active) {
         this.#activeChatRuns.delete(active.runId);
       }
+      // The finished run may have made its thread eligible for a new memory
+      // summary.
+      this.#startMemoryMaintenance();
     }
   }
 

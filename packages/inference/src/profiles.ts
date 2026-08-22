@@ -14,6 +14,8 @@ export const EVIDENCE_FIRST_ANSWER_PROMPT_VERSION =
   "evidence-first-answer-v2" as const;
 export const EVIDENCE_FIRST_VERIFICATION_PROMPT_VERSION =
   "evidence-first-verification-v2" as const;
+export const MEMORY_SUMMARY_PROMPT_VERSION =
+  "thread-memory-summary-v1" as const;
 export const HYBRID_SYNTHESIS_PROMPT_VERSION = "hybrid-synthesis-v5" as const;
 export const HYBRID_SYNTHESIS_VERIFICATION_PROMPT_VERSION =
   "hybrid-synthesis-verification-v3" as const;

@@ -19,9 +19,11 @@ import {
   HYBRID_SYNTHESIS_VERIFICATION_JSON_SCHEMA,
   HYBRID_SYNTHESIS_VERIFICATION_PROMPT_VERSION,
   InferenceError,
+  MEMORY_SUMMARY_PROMPT_VERSION,
   OllamaAdapter,
   QUERY_EMBEDDING_INSTRUCTION,
   QUERY_EMBEDDING_INSTRUCTION_VERSION,
+  THREAD_SUMMARY_JSON_SCHEMA,
 } from "../src/index.js";
 import type {
   AnswerStreamRequest,
@@ -847,6 +849,100 @@ describe("verified hybrid synthesis", () => {
     expect(body).not.toHaveProperty("evidence");
     expect(body).not.toHaveProperty("thinking");
     expect(body).not.toHaveProperty("tools");
+  });
+
+  it("summarizes a thread with the memory prompt, prior summary, and known facts", async () => {
+    const summary = {
+      conclusions: ["Squash seeds keep longest when fermented briefly before drying."],
+      keyQuestions: ["How should squash seeds be saved for next season?"],
+      topics: ["squash seed saving"],
+      userFacts: [{ category: "project" as const, fact: "Grows heirloom squash." }],
+      version: 1 as const,
+    };
+    const priorSummary = {
+      conclusions: ["Seeds store best somewhere cool and dry."],
+      keyQuestions: ["How should seeds be stored?"],
+      topics: ["seed storage"],
+      userFacts: [],
+      version: 1 as const,
+    };
+    const fetchMock = modelFetch("chat", () =>
+      jsonResponse({
+        done: true,
+        message: { content: JSON.stringify(summary), role: "assistant" },
+        model: generationProfile.model,
+      }),
+    );
+    const adapter = new OllamaAdapter({
+      embeddingProfile,
+      fetch: fetchMock,
+      generationProfile,
+    });
+
+    await expect(
+      adapter.summarizeThread({
+        knownFacts: ["Prefers metric units."],
+        messages: [
+          { content: "How do I save squash seeds?", role: "user" },
+          { content: "Ferment them briefly, then dry fully.", role: "assistant" },
+        ],
+        priorSummary,
+        threadTitle: "Seed saving",
+      }),
+    ).resolves.toEqual(summary);
+
+    const chatCall = vi.mocked(fetchMock).mock.calls.find(
+      ([input]) => requestPath(input) === "/api/chat",
+    );
+    const body = requestBody(chatCall?.[1]);
+    const messages = body.messages as readonly { content: string; role: string }[];
+    expect(messages[0]!.content).toContain(MEMORY_SUMMARY_PROMPT_VERSION);
+    expect(messages[0]!.content).toContain("untrusted data");
+    expect(messages[0]!.content).toContain("never copy answer sentences verbatim");
+    expect(messages[0]!.content).toContain("already listed in knownFacts");
+    expect(JSON.parse(messages[1]!.content)).toEqual({
+      knownFacts: ["Prefers metric units."],
+      messages: [
+        { content: "How do I save squash seeds?", role: "user" },
+        { content: "Ferment them briefly, then dry fully.", role: "assistant" },
+      ],
+      priorSummary,
+      threadTitle: "Seed saving",
+    });
+    expect(body.format).toEqual(THREAD_SUMMARY_JSON_SCHEMA);
+    expect(body).toMatchObject({ stream: false, think: false });
+  });
+
+  it("rejects a thread summary without topics", async () => {
+    const adapter = new OllamaAdapter({
+      embeddingProfile,
+      fetch: modelFetch("chat", () =>
+        jsonResponse({
+          done: true,
+          message: {
+            content: JSON.stringify({
+              conclusions: [],
+              keyQuestions: [],
+              topics: [],
+              userFacts: [],
+              version: 1,
+            }),
+            role: "assistant",
+          },
+          model: generationProfile.model,
+        }),
+      ),
+      generationProfile,
+    });
+
+    await expect(
+      adapter.summarizeThread({
+        knownFacts: [],
+        messages: [{ content: "Hello there", role: "user" }],
+        priorSummary: null,
+        threadTitle: "Empty",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
   it("accepts a whole Markdown-fenced object before strict schema validation", async () => {

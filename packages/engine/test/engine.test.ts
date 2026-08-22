@@ -12,6 +12,7 @@ import * as sqliteVec from "sqlite-vec";
 import {
   DEFAULT_EMBEDDING_PROFILE,
   InferenceError,
+  MEMORY_SUMMARY_PROMPT_VERSION,
   UNCONFIGURED_GENERATION_PROFILE,
   type AnswerStreamRequest,
   type ClaimReconciliationRequest,
@@ -27,6 +28,8 @@ import {
   type ModelPullProgress,
   type QuestionContextualizationRequest,
   type SynthesisVerificationRequest,
+  type ThreadSummaryRequest,
+  type ThreadSummaryResult,
 } from "@knosys-rag/inference";
 import { KnosysDatabase } from "@knosys-rag/storage-sqlite";
 
@@ -115,6 +118,9 @@ class FakeInferenceProvider implements RagInferenceProvider {
   public readonly verificationRequests: SynthesisVerificationRequest[] = [];
   public contextualizedQuestion: string | null = null;
   public closedBookGate: Promise<void> | null = null;
+  public readonly threadSummaryRequests: ThreadSummaryRequest[] = [];
+  public threadSummaryResult: ThreadSummaryResult | null = null;
+  public failThreadSummary = false;
   public failDocumentEmbedding = false;
   public failModelListing = false;
   public failQueryEmbedding = false;
@@ -348,6 +354,25 @@ class FakeInferenceProvider implements RagInferenceProvider {
       claims: [{ text: "Keep tomato leaves dry." }],
       version: 1 as const,
     };
+  }
+
+  public async summarizeThread(
+    request: ThreadSummaryRequest,
+    options?: InferenceRequestOptions,
+  ): Promise<ThreadSummaryResult> {
+    options?.signal?.throwIfAborted();
+    this.threadSummaryRequests.push(request);
+    this.operationLog.push("memory-summary");
+    if (this.failThreadSummary) throw new Error("Thread summarization failed.");
+    return (
+      this.threadSummaryResult ?? {
+        conclusions: ["Tomato leaves should stay dry."],
+        keyQuestions: [request.messages[0]?.content ?? "What was asked?"],
+        topics: ["tomato care"],
+        userFacts: [],
+        version: 1 as const,
+      }
+    );
   }
 
   public async reconcileClaims(
@@ -1805,5 +1830,141 @@ describe("production RAG orchestration", () => {
     });
     check.close();
     recovered.close();
+  });
+});
+
+describe("conversation memory maintenance", () => {
+  async function seedChatEngine(prefix: string) {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    const source = join(root, "tomatoes.txt");
+    await writeFile(source, "Keep tomato leaves dry when watering.", "utf8");
+    const provider = new FakeInferenceProvider();
+    const engine = new KnowledgeEngine(join(root, "app-data"), vectorExtensionPath, {
+      inferenceProvider: provider,
+    });
+    await engine.importPaths([source]);
+    await engine.initializeRag();
+    await waitForBackfill(engine);
+    const database = new KnosysDatabase(
+      join(root, "app-data", "state", "knosys-rag.sqlite"),
+      vectorExtensionPath,
+    );
+    return { database, engine, provider, root };
+  }
+
+  it("summarizes finished threads into retrievable, embedded memories with user facts", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry when watering."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "project", fact: "Grows tomatoes on a balcony." }],
+      version: 1,
+    };
+
+    const { events } = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+
+    await vi.waitFor(
+      () => {
+        expect(database.searchMemoryLexical("tomato watering")).toMatchObject([
+          { threadId },
+        ]);
+        expect(database.listUserFacts()).toMatchObject([
+          { fact: "Grows tomatoes on a balcony.", origin: "extracted", sourceThreadId: threadId },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    const request = provider.threadSummaryRequests[0];
+    expect(request).toMatchObject({ knownFacts: [], priorSummary: null });
+    expect(request?.messages).toMatchObject([
+      { content: "How should tomato plants be watered?", role: "user" },
+      { role: "assistant" },
+    ]);
+    const memory = database.getThreadMemory(threadId);
+    expect(memory).toMatchObject({
+      promptVersion: MEMORY_SUMMARY_PROMPT_VERSION,
+      summarizedMessageCount: 2,
+      topics: ["tomato watering"],
+    });
+    expect(memory?.summaryText).toContain("Topics: tomato watering");
+    expect(memory?.summaryText).toContain("Tomato leaves should stay dry");
+
+    // The summary is embedded by the same maintenance pass.
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+        expect(database.searchMemoryVectors(profileId, unitVector(1), 5)).toMatchObject([
+          { threadId },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("leaves failed summaries stale, then retries with the prior summary and known facts", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-retry-");
+    provider.failThreadSummary = true;
+
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = first.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+
+    await vi.waitFor(
+      () => {
+        expect(provider.threadSummaryRequests.length).toBeGreaterThan(0);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(
+      database
+        .listThreadsNeedingMemorySummary(MEMORY_SUMMARY_PROMPT_VERSION)
+        .map((item) => item.threadId),
+    ).toEqual([threadId]);
+
+    // The next completed run retries; its summary then feeds the one after.
+    provider.failThreadSummary = false;
+    provider.threadSummaryResult = {
+      conclusions: ["Water at the base of the plant."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "preference", fact: "Prefers drip irrigation." }],
+      version: 1,
+    };
+    await terminalEvent(engine, "And how often should I water?", threadId);
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).toMatchObject({
+          summarizedMessageCount: 4,
+        });
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    await terminalEvent(engine, "What about fertilizer?", threadId);
+    await vi.waitFor(
+      () => {
+        const request = provider.threadSummaryRequests.at(-1);
+        expect(request?.priorSummary).toMatchObject({ topics: ["tomato watering"] });
+        expect(request?.knownFacts).toEqual(["Prefers drip irrigation."]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
   });
 });

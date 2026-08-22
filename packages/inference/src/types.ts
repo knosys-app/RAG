@@ -236,6 +236,32 @@ export interface SynthesisVerificationRequest {
   readonly statements: readonly HybridSynthesisStatement[];
 }
 
+export type UserFactCategory = "preference" | "profile" | "project" | "other";
+
+export interface ThreadSummaryFactCandidate {
+  readonly category: UserFactCategory;
+  readonly fact: string;
+}
+
+export interface ThreadSummaryResult {
+  readonly conclusions: readonly string[];
+  readonly keyQuestions: readonly string[];
+  readonly topics: readonly string[];
+  readonly userFacts: readonly ThreadSummaryFactCandidate[];
+  readonly version: 1;
+}
+
+export interface ThreadSummaryRequest {
+  // Active user facts already stored; the model must return only facts absent
+  // from this list.
+  readonly knownFacts: readonly string[];
+  readonly messages: readonly ConversationMessage[];
+  // The previous summary of this thread, covering turns that may no longer be
+  // in messages; the new summary merges it with the recent turns.
+  readonly priorSummary: ThreadSummaryResult | null;
+  readonly threadTitle: string;
+}
+
 export interface EmbeddingProvider {
   readonly embeddingProfile: EmbeddingModelProfile;
   embedDocuments(
@@ -286,6 +312,14 @@ export interface ClosedBookAnswerProvider {
     request: ClosedBookAnswerRequest,
     options?: InferenceRequestOptions,
   ): Promise<ClosedBookAnswerResult>;
+}
+
+export interface ThreadSummaryProvider {
+  readonly generationProfile: GenerationModelProfile;
+  summarizeThread(
+    request: ThreadSummaryRequest,
+    options?: InferenceRequestOptions,
+  ): Promise<ThreadSummaryResult>;
 }
 
 export interface ClaimReconciliationProvider {
