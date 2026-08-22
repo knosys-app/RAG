@@ -12,6 +12,7 @@ import {
   chatThreadListSchema,
   chatThreadSchema,
   chatThreadSummarySchema,
+  documentReviewSchema,
   engineEventEnvelopeSchema,
   engineRequestSchema,
   engineResponseSchema,
@@ -35,6 +36,7 @@ import {
   type AnswerMode,
   type EngineRequest,
   type GenerationModelPreference,
+  type DocumentReview,
   type ImportBatchResult,
   type ImportProgressEvent,
   type LibraryDeleteDocumentResult,
@@ -341,6 +343,53 @@ export class EngineClient {
       await this.#request({
         id: randomUUID(),
         method: "engine.library.deleteDocument",
+        params: { documentId },
+      }),
+    );
+  }
+
+  public async getDocumentReview(documentId: string): Promise<DocumentReview> {
+    await this.start();
+    return documentReviewSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.library.getDocumentReview",
+        params: { documentId },
+      }),
+    );
+  }
+
+  public async acknowledgeReview(documentId: string): Promise<LibrarySnapshot> {
+    await this.start();
+    return librarySnapshotSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.library.acknowledgeReview",
+        params: { documentId },
+      }),
+    );
+  }
+
+  public async replaceDocument(
+    documentId: string,
+    path: string,
+  ): Promise<ImportBatchResult> {
+    await this.start();
+    return importBatchResultSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.library.replaceDocument",
+        params: { documentId, path },
+      }),
+    );
+  }
+
+  public async reprocessDocument(documentId: string): Promise<LibrarySnapshot> {
+    await this.start();
+    return librarySnapshotSchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.library.reprocessDocument",
         params: { documentId },
       }),
     );

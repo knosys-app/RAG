@@ -66,27 +66,32 @@ function appendText(line: string, text: string): string {
   return `${line} ${cleaned}`;
 }
 
-function textLines(items: readonly unknown[]): {
-  readonly controlCharacters: number;
+export function textLines(items: readonly unknown[]): {
   readonly lines: readonly string[];
   readonly replacementCharacters: number;
 } {
   const lines: string[] = [];
-  let controlCharacters = 0;
   let line = "";
   let previous: PdfTextItem | null = null;
   let replacementCharacters = 0;
 
   const flush = () => {
-    const value = line.trim();
-    if (value) lines.push(value);
+    const trimmed = line.trim();
     line = "";
+    if (!trimmed) return;
+    // A U+FFFD sandwiched between real (non-space, non-FFFD) characters is a
+    // broken space glyph (some PDF fonts map their space to U+FFFD), not lost
+    // content. Restore it to a space so phrase search matches. Runs of U+FFFD
+    // bounded by spaces, or at a line edge, are left intact as genuine garble.
+    const repaired = trimmed.replace(/(?<=[^\s\uFFFD])\uFFFD+(?=[^\s\uFFFD])/gu, " ");
+    // Count only the replacement characters that survive repair, i.e. the ones
+    // that actually reach the searchable index and signal real decoding damage.
+    replacementCharacters += repaired.match(/\uFFFD/g)?.length ?? 0;
+    lines.push(repaired);
   };
 
   for (const value of items) {
     if (!isPdfTextItem(value)) continue;
-    controlCharacters += [...value.str].filter(isUnsafeControlCharacter).length;
-    replacementCharacters += value.str.match(/\uFFFD/g)?.length ?? 0;
     const currentY = itemY(value);
     const previousY = previous === null ? null : itemY(previous);
     const changedLine =
@@ -100,7 +105,7 @@ function textLines(items: readonly unknown[]): {
     previous = value;
   }
   flush();
-  return { controlCharacters, lines, replacementCharacters };
+  return { lines, replacementCharacters };
 }
 
 function normalizedMarginLine(value: string): string {
@@ -130,7 +135,6 @@ function repeatedMargins(pages: readonly ExtractedPdfPage[]): {
 }
 
 function extractionDiagnostics(options: {
-  readonly controlCharacters: number;
   readonly extractedCharacters: number;
   readonly omittedMarginLines: number;
   readonly pages: readonly ExtractedPdfPage[];
@@ -139,10 +143,13 @@ function extractionDiagnostics(options: {
 }): readonly ParseDiagnostic[] {
   const diagnostics: ParseDiagnostic[] = [];
   if (options.pagesWithoutText > 0) {
+    // Image-only pages (photos, figures, covers) are normal in a text-rich PDF.
+    // This is informational, not a review flag; a fully image-only PDF is caught
+    // separately by the PDF_OCR_REQUIRED failure.
     diagnostics.push({
       code: "PDF_PAGES_REQUIRE_OCR",
       message: `${options.pagesWithoutText} of ${options.pages.length} pages contain no selectable text and were not indexed.`,
-      severity: "warning",
+      severity: "info",
     });
   }
   if (options.omittedMarginLines > 0) {
@@ -165,7 +172,10 @@ function extractionDiagnostics(options: {
     });
   }
 
-  const suspiciousCharacterCount = options.controlCharacters + options.replacementCharacters;
+  // Control characters are stripped from the index by cleanText, so they never
+  // reach the searchable text; only replacement characters (U+FFFD) survive and
+  // signal genuinely garbled decoding of the indexed content.
+  const suspiciousCharacterCount = options.replacementCharacters;
   if (
     suspiciousCharacterCount >= 10 &&
     suspiciousCharacterCount / Math.max(options.extractedCharacters, 1) >= 0.005
@@ -180,8 +190,11 @@ function extractionDiagnostics(options: {
   const lines = textPages.flatMap((page) => page.lines);
   const garbledLines = lines.filter((line) => {
     if (line.length < 12) return false;
-    const readableCharacters = line.match(/[\p{L}\p{N}\s.,;:!?()'"%/-]/gu)?.length ?? 0;
-    return readableCharacters / line.length < 0.6;
+    // A line is garbled only when dominated by genuinely-bad characters —
+    // replacement (U+FFFD) or private-use glyphs. Legitimate symbols,
+    // punctuation, math, and URLs are not treated as garble.
+    const badCharacters = line.match(/[\uFFFD\uE000-\uF8FF]/gu)?.length ?? 0;
+    return badCharacters / line.length >= 0.4;
   }).length;
   if (garbledLines >= 5 && garbledLines / Math.max(lines.length, 1) >= 0.1) {
     diagnostics.push({
@@ -264,7 +277,6 @@ export async function parsePdfBytes(
     }
 
     const pages: ExtractedPdfPage[] = [];
-    let controlCharacters = 0;
     let extractedCharacters = 0;
     let replacementCharacters = 0;
     let textItemCount = 0;
@@ -282,7 +294,6 @@ export async function parsePdfBytes(
           );
         }
         const extracted = textLines(textContent.items);
-        controlCharacters += extracted.controlCharacters;
         replacementCharacters += extracted.replacementCharacters;
         extractedCharacters += extracted.lines.reduce((total, line) => total + line.length, 0);
         if (extractedCharacters > MAX_EXTRACTED_CHARACTERS) {
@@ -349,7 +360,6 @@ export async function parsePdfBytes(
     const title = stringProperty(metadataResult?.info, "Title") ?? fallbackTitle(filename);
     const author = stringProperty(metadataResult?.info, "Author");
     const diagnostics = extractionDiagnostics({
-      controlCharacters,
       extractedCharacters,
       omittedMarginLines,
       pages,

@@ -133,6 +133,10 @@ export interface EvidenceFirstStatement {
 export interface EvidenceFirstAnswerRequest {
   readonly evidence: readonly ReconciliationEvidence[];
   readonly libraryAnswer: string;
+  // The model's own closed-book answer, synthesized in as labeled model
+  // statements for anything the library evidence does not cover. Optional so
+  // callers that only want grounded output can omit it.
+  readonly modelDraft?: string;
   readonly originalQuestion: string;
   readonly resolvedQuestion: string;
 }

@@ -6,6 +6,7 @@ import {
   FilePlus2,
   FolderOpen,
   LoaderCircle,
+  RotateCw,
   Search,
 } from "lucide-react";
 import {
@@ -21,6 +22,7 @@ import { AnimatePresence, motion } from "motion/react";
 
 import { ActivityPanel } from "@/components/library/ActivityPanel";
 import { DocumentList } from "@/components/library/DocumentList";
+import { DocumentReviewDialog } from "@/components/library/DocumentReviewDialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -56,6 +58,8 @@ export function LibraryView({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<DocumentSummary | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [reviewCandidate, setReviewCandidate] = useState<DocumentSummary | null>(null);
+  const [rechecking, setRechecking] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -93,6 +97,24 @@ export function LibraryView({
   const importNeedsReview = library.importOutcomes.some((outcome) =>
     ["failed", "unsupported"].includes(outcome.status),
   );
+  const flaggedDocuments = documents.filter(
+    (document) =>
+      document.status === "failed" ||
+      (document.status === "ready-with-warnings" && document.reviewedAt === null),
+  );
+
+  const recheckFlagged = async () => {
+    const ids = flaggedDocuments.map((document) => document.id);
+    if (ids.length === 0) return;
+    setRechecking(true);
+    try {
+      for (const id of ids) {
+        await library.reprocessDocument(id);
+      }
+    } finally {
+      setRechecking(false);
+    }
+  };
 
   return (
     <div className="h-full min-w-0 flex-1 overflow-y-auto">
@@ -167,6 +189,23 @@ export function LibraryView({
             )}
             {library.importing === "directory" ? "Scanning" : "Import folder"}
           </Button>
+          {flaggedDocuments.length > 0 ? (
+            <Button
+              disabled={rechecking || library.importing !== null}
+              onClick={() => void recheckFlagged()}
+              size="sm"
+              variant="outline"
+            >
+              {rechecking ? (
+                <LoaderCircle className="animate-spin" size={15} />
+              ) : (
+                <RotateCw size={15} />
+              )}
+              {rechecking
+                ? "Rechecking"
+                : `Recheck flagged (${flaggedDocuments.length})`}
+            </Button>
+          ) : null}
         </div>
 
         <ActivityPanel
@@ -303,6 +342,9 @@ export function LibraryView({
               setDeleteError(null);
               setDeleteCandidate(document);
             }}
+            onReview={(document) => {
+              setReviewCandidate(document);
+            }}
           />
         ) : library.libraryState.state === "ready" ? (
           <div className="flex flex-col items-center gap-4 rounded-xl border border-dashed px-6 py-10 text-center">
@@ -373,6 +415,12 @@ export function LibraryView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DocumentReviewDialog
+        document={reviewCandidate}
+        library={library}
+        onClose={() => setReviewCandidate(null)}
+      />
     </div>
   );
 }

@@ -186,6 +186,55 @@ export function registerIpcHandlers(engine: EngineClient): void {
               ok: true,
               result: await engine.deleteDocument(parsed.data.params.documentId),
             });
+          case "library.getDocumentReview":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.getDocumentReview(parsed.data.params.documentId),
+            });
+          case "library.acknowledgeReview":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.acknowledgeReview(parsed.data.params.documentId),
+            });
+          case "library.reprocessDocument":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.reprocessDocument(parsed.data.params.documentId),
+            });
+          case "library.replaceDocument": {
+            const window = BrowserWindow.fromWebContents(event.sender);
+            if (!window) {
+              return errorResponse(
+                parsed.data.id,
+                "UNTRUSTED_SENDER",
+                "The import request is not attached to an application window.",
+              );
+            }
+            const selection = await dialog.showOpenDialog(window, {
+              filters: [AVAILABLE_FILE_FILTER],
+              message: "Choose a replacement source to import",
+              properties: ["openFile"],
+              title: "Replace source",
+            });
+            const replacementPath = selection.filePaths[0];
+            const result = selection.canceled || !replacementPath
+              ? { batch: null, cancelled: true }
+              : {
+                  batch: await engine.replaceDocument(
+                    parsed.data.params.documentId,
+                    replacementPath,
+                  ),
+                  cancelled: false,
+                };
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: importSelectionResultSchema.parse(result),
+            });
+          }
           case "rag.getStatus":
             return ipcResponseSchema.parse({
               id: parsed.data.id,

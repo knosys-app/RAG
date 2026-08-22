@@ -76,6 +76,7 @@ export const documentSummarySchema = z.object({
   format: documentFormatSchema,
   id: z.uuid(),
   originalName: z.string().min(1),
+  reviewedAt: z.iso.datetime().nullable(),
   sizeBytes: z.number().int().nonnegative(),
   status: documentStatusSchema,
   title: z.string().min(1),
@@ -97,6 +98,28 @@ export const jobSummarySchema = z.object({
 export const librarySnapshotSchema = z.object({
   documents: z.array(documentSummarySchema),
   jobs: z.array(jobSummarySchema),
+});
+
+export const sourceLocationSchema = z
+  .object({
+    endLine: z.number().int().nonnegative(),
+    fragment: z.string().min(1),
+    pageNumber: z.number().int().positive(),
+    sourcePath: z.string().min(1),
+    startLine: z.number().int().nonnegative(),
+  })
+  .partial();
+
+export const parseDiagnosticSchema = z.object({
+  code: z.string().min(1),
+  location: sourceLocationSchema.optional(),
+  message: z.string().min(1),
+  severity: z.enum(["info", "warning", "error"]),
+});
+
+export const documentReviewSchema = z.object({
+  diagnostics: z.array(parseDiagnosticSchema),
+  document: documentSummarySchema,
 });
 
 export const searchResultSchema = z.object({
@@ -886,6 +909,10 @@ export const answerProvenanceV2Schema = z
         contextualization: boundedIdentifierSchema.nullable(),
         evidenceAnswer: boundedIdentifierSchema,
         groundedDerivation: boundedIdentifierSchema,
+        // The closed-book prompt used to draft the model's own answer, when one
+        // was synthesized in; null when only grounded library text was used.
+        // Defaulted so provenance stored before this field existed still parses.
+        modelDraft: boundedIdentifierSchema.nullable().default(null),
         verification: boundedIdentifierSchema,
       })
       .strict(),
@@ -1284,6 +1311,9 @@ export const libraryDeleteDocumentResultSchema = z
     snapshot: librarySnapshotSchema,
   })
   .strict();
+export const libraryGetDocumentReviewResultSchema = documentReviewSchema;
+export const libraryAcknowledgeReviewResultSchema = librarySnapshotSchema;
+export const libraryReplaceDocumentResultSchema = importSelectionResultSchema;
 export const modelsPullResultSchema = z
   .object({
     accepted: z.literal(true),
@@ -1365,6 +1395,54 @@ export const libraryDeleteDocumentRequestSchema = z
   .object({
     id: z.uuid(),
     method: z.literal("library.deleteDocument"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const libraryGetDocumentReviewRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("library.getDocumentReview"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const libraryAcknowledgeReviewRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("library.acknowledgeReview"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const libraryReplaceDocumentRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("library.replaceDocument"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const libraryReprocessDocumentRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("library.reprocessDocument"),
     params: z
       .object({
         documentId: z.uuid(),
@@ -1582,6 +1660,10 @@ export const ipcRequestSchema = z.discriminatedUnion("method", [
   libraryImportDirectoryRequestSchema,
   librarySearchRequestSchema,
   libraryDeleteDocumentRequestSchema,
+  libraryGetDocumentReviewRequestSchema,
+  libraryAcknowledgeReviewRequestSchema,
+  libraryReplaceDocumentRequestSchema,
+  libraryReprocessDocumentRequestSchema,
   ragGetStatusRequestSchema,
   ragSetGenerationModelRequestSchema,
   chatListThreadsRequestSchema,
@@ -1649,6 +1731,7 @@ export const ipcResultSchema = z.union([
   importSelectionResultSchema,
   z.array(searchResultSchema),
   libraryDeleteDocumentResultSchema,
+  documentReviewSchema,
   ragGetStatusResultSchema,
   ragSetGenerationModelResultSchema,
   chatListThreadsResultSchema,
@@ -1824,6 +1907,55 @@ export const engineLibraryDeleteDocumentRequestSchema = z
   })
   .strict();
 
+export const engineLibraryGetDocumentReviewRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.library.getDocumentReview"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineLibraryAcknowledgeReviewRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.library.acknowledgeReview"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineLibraryReplaceDocumentRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.library.replaceDocument"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+        path: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineLibraryReprocessDocumentRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.library.reprocessDocument"),
+    params: z
+      .object({
+        documentId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const engineChatListFoldersRequestSchema = z
   .object({
     id: z.uuid(),
@@ -1939,6 +2071,10 @@ export const engineRequestSchema = z.discriminatedUnion("method", [
   engineImportDirectoryRequestSchema,
   engineSearchRequestSchema,
   engineLibraryDeleteDocumentRequestSchema,
+  engineLibraryGetDocumentReviewRequestSchema,
+  engineLibraryAcknowledgeReviewRequestSchema,
+  engineLibraryReplaceDocumentRequestSchema,
+  engineLibraryReprocessDocumentRequestSchema,
   engineRagGetStatusRequestSchema,
   engineRagSetGenerationModelRequestSchema,
   engineChatListThreadsRequestSchema,
@@ -1964,6 +2100,7 @@ export const engineResultSchema = z.union([
   importBatchResultSchema,
   z.array(searchResultSchema),
   libraryDeleteDocumentResultSchema,
+  documentReviewSchema,
   ragGetStatusResultSchema,
   ragSetGenerationModelResultSchema,
   chatListThreadsResultSchema,
@@ -2040,6 +2177,9 @@ export type ChatThread = z.infer<typeof chatThreadSchema>;
 export type ChatThreadSummary = z.infer<typeof chatThreadSummarySchema>;
 export type CitationComponentScore = z.infer<typeof citationComponentScoreSchema>;
 export type DocumentSummary = z.infer<typeof documentSummarySchema>;
+export type DocumentReview = z.infer<typeof documentReviewSchema>;
+export type ContractParseDiagnostic = z.infer<typeof parseDiagnosticSchema>;
+export type ContractSourceLocation = z.infer<typeof sourceLocationSchema>;
 export type EmbeddingCoverage = z.infer<typeof embeddingCoverageSchema>;
 export type EmbeddingModel = z.infer<typeof embeddingModelSchema>;
 export type EmbeddingModelName = z.infer<typeof embeddingModelNameSchema>;
@@ -2163,11 +2303,15 @@ export interface KnosysDesktopApi {
     get(citationId: string): Promise<ChatCitation>;
   };
   readonly library: {
+    acknowledgeReview(documentId: string): Promise<LibrarySnapshot>;
     deleteDocument(documentId: string): Promise<LibraryDeleteDocumentResult>;
+    getDocumentReview(documentId: string): Promise<DocumentReview>;
     getSnapshot(): Promise<LibrarySnapshot>;
     importDirectory(): Promise<ImportSelectionResult>;
     importFiles(): Promise<ImportSelectionResult>;
     onImportProgress(listener: (event: ImportProgressEvent) => void): () => void;
+    replaceDocument(documentId: string): Promise<ImportSelectionResult>;
+    reprocessDocument(documentId: string): Promise<LibrarySnapshot>;
     search(query: string): Promise<readonly SearchResult[]>;
   };
   readonly models: {

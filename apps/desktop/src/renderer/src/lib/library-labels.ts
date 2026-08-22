@@ -12,7 +12,7 @@ export function documentStatusLabel(document: DocumentSummary): string {
     case "ready":
       return "Ready";
     case "ready-with-warnings":
-      return "Review warning";
+      return document.reviewedAt ? "Reviewed" : "Review needed";
     case "failed":
       return "Failed";
   }

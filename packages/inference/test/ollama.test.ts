@@ -1359,9 +1359,9 @@ describe("verified hybrid synthesis", () => {
 
 describe("evidence-first answers", () => {
   it("exports versioned prompts and strict bounded schemas", () => {
-    expect(EVIDENCE_FIRST_ANSWER_PROMPT_VERSION).toBe("evidence-first-answer-v1");
+    expect(EVIDENCE_FIRST_ANSWER_PROMPT_VERSION).toBe("evidence-first-answer-v2");
     expect(EVIDENCE_FIRST_VERIFICATION_PROMPT_VERSION).toBe(
-      "evidence-first-verification-v1",
+      "evidence-first-verification-v2",
     );
     expect(EVIDENCE_FIRST_ANSWER_JSON_SCHEMA).toMatchObject({
       additionalProperties: false,
@@ -1458,8 +1458,8 @@ describe("evidence-first answers", () => {
       "resolvedQuestion",
     ]);
     expect(payload).toEqual(evidenceFirstAnswerRequest());
-    expect(messages[0]!.content).toContain("authoritative over pretrained knowledge");
-    expect(messages[0]!.content).toContain("only for gaps");
+    expect(messages[0]!.content).toContain("library evidence is authoritative");
+    expect(messages[0]!.content).toContain("model draft");
     expect(messages[0]!.content).toContain("one uninterrupted narrative");
     expect(messages[0]!.content).toContain("transparent arithmetic or calendar derivation");
     expect(messages[0]!.content).toContain("untrusted data");
@@ -1469,6 +1469,38 @@ describe("evidence-first answers", () => {
     expect(body.format).toEqual(EVIDENCE_FIRST_ANSWER_JSON_SCHEMA);
     expect(body).toMatchObject({ stream: false, think: false });
     expect(body).not.toHaveProperty("tools");
+  });
+
+  it("threads the model draft into the generation payload when provided", async () => {
+    const result = { statements: evidenceFirstStatements(), version: 1 as const };
+    const fetchMock = modelFetch("chat", () =>
+      jsonResponse({
+        done: true,
+        message: { content: JSON.stringify(result), role: "assistant" },
+        model: generationProfile.model,
+      }),
+    );
+    const adapter = new OllamaAdapter({
+      embeddingProfile,
+      fetch: fetchMock,
+      generationProfile,
+    });
+    const draft = "Yes — the daytime sky is blue because of Rayleigh scattering.";
+
+    await adapter.generateEvidenceFirstAnswer({
+      ...evidenceFirstAnswerRequest(),
+      modelDraft: draft,
+    });
+
+    const chatCall = vi.mocked(fetchMock).mock.calls.find(
+      ([input]) => requestPath(input) === "/api/chat",
+    );
+    const messages = requestBody(chatCall?.[1]).messages as readonly {
+      content: string;
+      role: string;
+    }[];
+    const payload = JSON.parse(messages[1]!.content) as Record<string, unknown>;
+    expect(payload.modelDraft).toBe(draft);
   });
 
   it("sends the exact verification payload and acceptance rules", async () => {

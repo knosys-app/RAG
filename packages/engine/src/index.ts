@@ -28,6 +28,7 @@ import {
   isAvailableSourceFilename,
   isSupportedSourceFilename,
   type DocumentFormat,
+  type ParseDiagnostic,
 } from "@knosys-rag/core";
 import {
   chunkDocument,
@@ -36,6 +37,7 @@ import {
   parseDocumentBytes,
 } from "@knosys-rag/ingestion";
 import {
+  CLOSED_BOOK_ANSWER_PROMPT_VERSION,
   compatibleGenerationModels,
   DEFAULT_EMBEDDING_PROFILE,
   EVIDENCE_FIRST_ANSWER_PROMPT_VERSION,
@@ -51,6 +53,7 @@ import {
   type CanonicalLibraryClaim,
   type ClaimReconciliationProvider,
   type ClosedBookAnswerProvider,
+  type ClosedBookAnswerResult,
   type ConversationMessage,
   type EmbeddingProvider,
   type EvidenceFirstAnswerProvider,
@@ -71,6 +74,7 @@ import {
   GROUNDED_DERIVATION_GUIDANCE_VERSION,
   GroundedAnswerOrchestrator,
   canonicalEvidenceFirstStatements,
+  modelStatementsFromClaims,
   renderEvidenceFirstNarrative,
   validateEvidenceFirstAnswer,
   validateEvidenceFirstVerification,
@@ -96,6 +100,7 @@ import {
   type ChatMessage,
   type ChatThread,
   type ChatThreadSummary,
+  type DocumentSummary,
   type EmbeddingProfile,
   type EvidenceResult,
   type LibrarySnapshot,
@@ -1991,12 +1996,37 @@ export class KnowledgeEngine {
         : { title: citation.source.sourceName }),
     }));
     const evidenceIds = new Set(evidence.map(({ id }) => id));
-    let finalStatements = canonicalEvidenceFirstStatements(libraryClaims);
+
+    this.#updateAndEmitStatus(active, "synthesizing");
+    // The model's own answer to the question. It seeds synthesis (so parts the
+    // library does not cover are still answered, labeled as model knowledge) and
+    // is the fallback when generation or verification fails, so Hybrid never
+    // degrades to a bare "the documents do not contain this" refusal.
+    let modelDraft: ClosedBookAnswerResult | null = null;
+    try {
+      modelDraft = await active.closedBookAnswerProvider.generateClosedBookAnswer(
+        { question: originalQuestion },
+        { signal: active.controller.signal },
+      );
+    } catch (error) {
+      rethrowIfAborted(error, active.controller.signal);
+      modelDraft = null;
+    }
+    active.controller.signal.throwIfAborted();
+    // Prefer grounded library statements when the library has claims; otherwise
+    // fall back to the labeled model answer. Only an empty library together with
+    // an unavailable model draft leaves nothing (a genuine "insufficient").
+    const fallbackStatements =
+      libraryClaims.length > 0
+        ? canonicalEvidenceFirstStatements(libraryClaims)
+        : modelStatementsFromClaims(modelDraft?.claims ?? []);
+
+    let finalStatements = fallbackStatements;
     let generationStage = provenanceStage("skipped", "generation-not-started");
     let verificationStage = provenanceStage("skipped", "generation-not-completed");
     let usedFallback = false;
 
-    this.#updateAndEmitStatus(active, "synthesizing");
+    const draftText = modelDraft?.answer.trim();
     try {
       let generated: EvidenceFirstAnswerResult | null = null;
       let streamedAny = false;
@@ -2007,6 +2037,7 @@ export class KnowledgeEngine {
             libraryResult.plan.type === "answer"
               ? libraryResult.plan.answer
               : libraryResult.plan.reason,
+          ...(draftText ? { modelDraft: draftText } : {}),
           originalQuestion,
           resolvedQuestion,
         },
@@ -2075,6 +2106,7 @@ export class KnowledgeEngine {
         contextualization: questionContextualizationVersion,
         evidenceAnswer: EVIDENCE_FIRST_ANSWER_PROMPT_VERSION,
         groundedDerivation: GROUNDED_DERIVATION_GUIDANCE_VERSION,
+        modelDraft: modelDraft === null ? null : CLOSED_BOOK_ANSWER_PROMPT_VERSION,
         verification: EVIDENCE_FIRST_VERIFICATION_PROMPT_VERSION,
       },
       stages: {
@@ -2364,6 +2396,156 @@ export class KnowledgeEngine {
       }
     }
     return { deletedDocumentId: documentId, snapshot: this.getSnapshot() };
+  }
+
+  public getDocumentReview(documentId: string): {
+    readonly document: DocumentSummary;
+    readonly diagnostics: readonly ParseDiagnostic[];
+  } {
+    this.#assertOpen();
+    if (documentId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A document ID is required.");
+    }
+    const document = this.#database.findDocumentById(documentId);
+    if (!document) {
+      throw new EngineOperationError(
+        "DOCUMENT_NOT_FOUND",
+        `Document ${documentId} does not exist.`,
+      );
+    }
+    return { diagnostics: this.#database.getDocumentDiagnostics(documentId), document };
+  }
+
+  public acknowledgeDocumentReview(documentId: string): LibrarySnapshot {
+    this.#assertOpen();
+    if (documentId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A document ID is required.");
+    }
+    const document = this.#database.findDocumentById(documentId);
+    if (!document) {
+      throw new EngineOperationError(
+        "DOCUMENT_NOT_FOUND",
+        `Document ${documentId} does not exist.`,
+      );
+    }
+    if (document.status !== "ready-with-warnings") {
+      throw new EngineOperationError(
+        "INVALID_REQUEST",
+        `Document ${documentId} has no review warnings to acknowledge.`,
+      );
+    }
+    this.#database.acknowledgeDocumentReview(documentId);
+    return this.getSnapshot();
+  }
+
+  public async replaceDocument(
+    documentId: string,
+    path: string,
+    options: ImportProgressOptions = {},
+  ): Promise<ImportBatchResult> {
+    this.#assertOpen();
+    if (documentId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A document ID is required.");
+    }
+    if (path.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A replacement file path is required.");
+    }
+    // Validate the replacement is a supported type BEFORE removing the original,
+    // so a bad selection never leaves the document deleted with nothing to show.
+    if (!isSupportedSourceFilename(basename(path))) {
+      throw new EngineOperationError(
+        "INVALID_REQUEST",
+        "The replacement file type is not supported.",
+      );
+    }
+    // Delete first: re-importing an identical checksum against a still-present
+    // ready-with-warnings document would be treated as a duplicate no-op.
+    await this.deleteDocument(documentId);
+    return this.importPaths([path], options);
+  }
+
+  /**
+   * Re-ingests an already-imported document from its stored managed copy using
+   * the current importer. Recovers text and clears stale review flags without
+   * asking the user to re-pick the original file.
+   */
+  public async reprocessDocument(
+    documentId: string,
+    options: ImportProgressOptions = {},
+  ): Promise<LibrarySnapshot> {
+    this.#assertOpen();
+    if (documentId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A document ID is required.");
+    }
+    const existing = this.#database.findDocumentById(documentId);
+    if (!existing) {
+      throw new EngineOperationError(
+        "DOCUMENT_NOT_FOUND",
+        `Document ${documentId} does not exist.`,
+      );
+    }
+    if (existing.status === "processing") {
+      throw new EngineOperationError(
+        "DOCUMENT_IMPORT_IN_PROGRESS",
+        `Document ${documentId} is still being imported and cannot be reprocessed yet.`,
+      );
+    }
+    const source = this.#database.getDocumentSourceLocation(documentId);
+    if (!source) {
+      throw new EngineOperationError(
+        "DOCUMENT_NOT_FOUND",
+        `Document ${documentId} has no stored source to reprocess.`,
+      );
+    }
+    const target = resolve(this.#libraryRoot, source.managedRelativePath);
+    if (!target.startsWith(this.#libraryRoot + sep)) {
+      throw new EngineOperationError(
+        "INTERNAL_ERROR",
+        "The managed source path is outside the library root.",
+      );
+    }
+    const operationId = options.operationId ?? randomUUID();
+    const report = (stage: ImportProgressStage) => {
+      try {
+        options.onProgress?.({
+          completed: 0,
+          currentName: source.originalName,
+          kind: "import-progress",
+          operationId,
+          stage,
+          total: 1,
+        });
+      } catch {
+        // Progress reporting must not interrupt a reprocess.
+      }
+    };
+
+    let bytes: Uint8Array;
+    const handle = await open(target, "r");
+    try {
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+
+    this.#database.beginDocumentReprocessing(documentId);
+    try {
+      report("parsing");
+      const document = await parseDocumentBytes(bytes, source.originalName, source.format);
+      report("chunking");
+      const chunks = chunkDocument(document);
+      report("indexing");
+      this.#database.completeDocument(documentId, document, chunks, ingestionVersions.chunker);
+      report("completed");
+      this.#startBackfill();
+      return this.getSnapshot();
+    } catch (error) {
+      const code = error instanceof DocumentParseError ? error.code : "REPROCESS_FAILED";
+      const message =
+        error instanceof Error ? error.message : "The document could not be reprocessed.";
+      this.#database.failDocument(documentId, code, message);
+      throw new EngineOperationError("INVALID_REQUEST", message, { cause: error });
+    }
   }
 
   public getVectorExtensionVersion(): string {

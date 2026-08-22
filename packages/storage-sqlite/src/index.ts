@@ -13,9 +13,11 @@ import {
   type DocumentStatus,
   type IngestionJobStatus,
   type NormalizedDocument,
+  type ParseDiagnostic,
+  type SourceLocation,
 } from "@knosys-rag/core";
 
-const CURRENT_SCHEMA_VERSION = 9;
+const CURRENT_SCHEMA_VERSION = 10;
 const MAX_EMBEDDING_BATCH_SIZE = 500;
 const MAX_RETRIEVAL_RESULTS = 100;
 
@@ -321,6 +323,7 @@ export interface DocumentSummary {
   readonly format: DocumentFormat;
   readonly id: string;
   readonly originalName: string;
+  readonly reviewedAt: string | null;
   readonly sizeBytes: number;
   readonly status: DocumentStatus;
   readonly title: string;
@@ -920,6 +923,16 @@ export class KnosysDatabase {
           .run(9, new Date().toISOString());
       });
     }
+    if (currentVersion < 10) {
+      this.#transaction(() => {
+        // Records when a reviewer has acknowledged a document's parse warnings.
+        // Null means "not yet reviewed"; the value is an ISO timestamp.
+        this.#addColumnIfMissing("documents", "reviewed_at", "TEXT");
+        this.#database
+          .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
+          .run(10, new Date().toISOString());
+      });
+    }
   }
 
   #addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -1009,6 +1022,23 @@ export class KnosysDatabase {
          WHERE d.source_checksum = ?`,
       )
       .get(checksum);
+    return row ? this.#mapDocument(row) : null;
+  }
+
+  public findDocumentById(documentId: string): DocumentSummary | null {
+    requireNonEmpty(documentId, "Document ID");
+    const row = this.#database
+      .prepare(
+        `SELECT d.*, s.byte_size, o.original_name
+         FROM documents d
+         JOIN source_blobs s ON s.checksum = d.source_checksum
+         JOIN source_origins o ON o.id = (
+           SELECT id FROM source_origins WHERE source_checksum = d.source_checksum
+           ORDER BY imported_at LIMIT 1
+         )
+         WHERE d.id = ?`,
+      )
+      .get(documentId);
     return row ? this.#mapDocument(row) : null;
   }
 
@@ -1185,7 +1215,8 @@ export class KnosysDatabase {
            SET title = ?, status = ?, parser_id = ?, parser_version = ?,
                 ir_schema_version = ?, chunker_version = ?, diagnostic_count = ?,
                 metadata_json = ?,
-                error_code = NULL, error_message = NULL, updated_at = ?
+                error_code = NULL, error_message = NULL, reviewed_at = NULL,
+                updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -1214,16 +1245,46 @@ export class KnosysDatabase {
   }
 
   public beginDocumentReprocessing(documentId: string): void {
+    // Reprocessing re-ingests an already-imported document from its stored
+    // managed copy. Any settled document may be reprocessed; excluding
+    // 'processing' avoids racing an in-flight import of the same document.
     const result = this.#database
       .prepare(
         `UPDATE documents
          SET status = 'processing', error_code = NULL, error_message = NULL, updated_at = ?
-         WHERE id = ? AND status = 'failed'`,
+         WHERE id = ? AND status IN ('ready', 'ready-with-warnings', 'failed')`,
       )
       .run(new Date().toISOString(), documentId);
     if (Number(result.changes) !== 1) {
-      throw new Error(`Failed document ${documentId} could not be reprocessed.`);
+      throw new Error(`Document ${documentId} could not be reprocessed.`);
     }
+  }
+
+  public getDocumentSourceLocation(
+    documentId: string,
+  ): { readonly format: DocumentFormat; readonly managedRelativePath: string; readonly originalName: string } | null {
+    requireNonEmpty(documentId, "Document ID");
+    const row = this.#database
+      .prepare(
+        `SELECT d.format AS format,
+                s.managed_relative_path AS managed_relative_path,
+                o.original_name AS original_name
+         FROM documents d
+         JOIN source_blobs s ON s.checksum = d.source_checksum
+         JOIN source_origins o ON o.id = (
+           SELECT id FROM source_origins WHERE source_checksum = d.source_checksum
+           ORDER BY imported_at LIMIT 1
+         )
+         WHERE d.id = ?`,
+      )
+      .get(documentId);
+    if (!row) return null;
+    const record = asRecord(row);
+    return {
+      format: asString(record.format) as DocumentFormat,
+      managedRelativePath: asString(record.managed_relative_path),
+      originalName: asString(record.original_name),
+    };
   }
 
   public deleteDocument(
@@ -1267,6 +1328,58 @@ export class KnosysDatabase {
         managedRelativePath: asString(record.managed_relative_path),
       } as const;
     });
+  }
+
+  public getDocumentDiagnostics(documentId: string): readonly ParseDiagnostic[] {
+    requireNonEmpty(documentId, "Document ID");
+    const rows = this.#database
+      .prepare(
+        `SELECT severity, code, message, start_line, end_line,
+                source_path, source_fragment, page_number
+         FROM parse_diagnostics
+         WHERE document_id = ?
+         ORDER BY ordinal ASC`,
+      )
+      .all(documentId);
+    return rows.map((raw) => {
+      const row = asRecord(raw);
+      const location: {
+        -readonly [K in keyof SourceLocation]: SourceLocation[K];
+      } = {};
+      const startLine = asNullableNumber(row.start_line);
+      const endLine = asNullableNumber(row.end_line);
+      const pageNumber = asNullableNumber(row.page_number);
+      const sourcePath = asNullableString(row.source_path);
+      const fragment = asNullableString(row.source_fragment);
+      if (startLine !== null) location.startLine = startLine;
+      if (endLine !== null) location.endLine = endLine;
+      if (pageNumber !== null) location.pageNumber = pageNumber;
+      if (sourcePath !== null) location.sourcePath = sourcePath;
+      if (fragment !== null) location.fragment = fragment;
+      const severity = asString(row.severity) as ParseDiagnostic["severity"];
+      return {
+        code: asString(row.code),
+        message: asString(row.message),
+        severity,
+        ...(Object.keys(location).length > 0 ? { location } : {}),
+      };
+    });
+  }
+
+  public acknowledgeDocumentReview(documentId: string): void {
+    requireNonEmpty(documentId, "Document ID");
+    const result = this.#database
+      .prepare(
+        `UPDATE documents
+         SET reviewed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'ready-with-warnings'`,
+      )
+      .run(new Date().toISOString(), new Date().toISOString(), documentId);
+    if (Number(result.changes) !== 1) {
+      throw new Error(
+        `Document ${documentId} is not in a reviewable warning state.`,
+      );
+    }
   }
 
   public getLibrarySnapshot(): LibrarySnapshot {
@@ -2570,6 +2683,7 @@ export class KnosysDatabase {
       format: asString(row.format) as DocumentFormat,
       id: asString(row.id),
       originalName: asString(row.original_name),
+      reviewedAt: asNullableString(row.reviewed_at),
       sizeBytes: asNumber(row.byte_size),
       status: asString(row.status) as DocumentStatus,
       title: asString(row.title),

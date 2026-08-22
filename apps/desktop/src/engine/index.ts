@@ -10,8 +10,14 @@ import { EngineOperationError, KnowledgeEngine } from "@knosys-rag/engine";
 let engine: KnowledgeEngine | null = null;
 
 function errorResponse(id: string, code: string, message: string): EngineResponse {
+  // Never let an over-long message (e.g. a verbose ZodError) overflow the
+  // response schema's 2048-char cap and turn a handled failure into an
+  // unhandled rejection that crashes the engine process.
+  const trimmed = message.trim();
+  const bounded =
+    trimmed.length > 2048 ? `${trimmed.slice(0, 2045)}...` : trimmed;
   return engineResponseSchema.parse({
-    error: { code, message },
+    error: { code, message: bounded || "The local engine operation failed." },
     id,
     ok: false,
   });
@@ -287,6 +293,57 @@ process.parentPort.on("message", (event) => {
               id: parsed.data.id,
               ok: true,
               result: await engine.deleteDocument(parsed.data.params.documentId),
+            }),
+          );
+          return;
+        }
+        case "engine.library.getDocumentReview": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.getDocumentReview(parsed.data.params.documentId),
+            }),
+          );
+          return;
+        }
+        case "engine.library.acknowledgeReview": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: engine.acknowledgeDocumentReview(parsed.data.params.documentId),
+            }),
+          );
+          return;
+        }
+        case "engine.library.replaceDocument": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.replaceDocument(
+                parsed.data.params.documentId,
+                parsed.data.params.path,
+                { onProgress: postImportProgress, operationId: parsed.data.id },
+              ),
+            }),
+          );
+          return;
+        }
+        case "engine.library.reprocessDocument": {
+          if (!engine) throw new Error("The local library is not initialized.");
+          process.parentPort.postMessage(
+            engineResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.reprocessDocument(parsed.data.params.documentId, {
+                onProgress: postImportProgress,
+                operationId: parsed.data.id,
+              }),
             }),
           );
           return;

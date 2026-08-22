@@ -18,6 +18,43 @@ export interface HtmlParseOptions {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly parserId?: string;
   readonly sourcePath?: string;
+  /**
+   * Suppresses the empty-document warning when this call parses a sub-document
+   * (an EPUB spine chapter) rather than a standalone file. A single image-only
+   * cover/illustration page legitimately yields no text; the caller reports
+   * emptiness at the whole-document level instead.
+   */
+  readonly suppressEmptyDiagnostic?: boolean;
+}
+
+// Text-level inline elements: their text belongs to the surrounding block, not
+// a block of their own. Anything not listed here (and not otherwise handled) is
+// treated as a generic block container whose stray inline text is flushed into
+// paragraphs so prose wrapped only in <div>/<span>/<a> is never dropped.
+const INLINE_TAGS = new Set([
+  "a", "abbr", "acronym", "b", "bdi", "bdo", "big", "br", "cite", "data", "dfn",
+  "em", "font", "i", "ins", "del", "kbd", "label", "mark", "nobr", "output", "q",
+  "rp", "rt", "ruby", "s", "samp", "small", "strong", "sub", "sup", "time", "tt",
+  "u", "var", "wbr",
+]);
+
+// Elements that produce (or contain) their own blocks. Used to detect an inline
+// element that illegally wraps a real block so it is recursed into, not
+// flattened into a paragraph.
+const BLOCK_PRODUCERS = new Set([
+  "p", "li", "ol", "ul", "table", "blockquote", "pre",
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  "div", "section", "article", "aside", "header", "footer", "main", "nav",
+  "figure", "figcaption",
+]);
+
+function containsBlockProducer(element: HtmlElement): boolean {
+  for (const child of element.childNodes) {
+    if (!isHtmlElement(child)) continue;
+    if (BLOCK_PRODUCERS.has(child.tagName.toLowerCase())) return true;
+    if (containsBlockProducer(child)) return true;
+  }
+  return false;
 }
 
 function fallbackTitle(filename: string): string {
@@ -199,6 +236,11 @@ export function parseHtmlText(
         }
         return;
       }
+
+      // Generic block container (div, section, body, …): recurse into block
+      // children and gather any stray inline text into paragraphs.
+      flushContainer(node, context);
+      return;
     }
 
     if ("childNodes" in node) {
@@ -206,20 +248,57 @@ export function parseHtmlText(
     }
   };
 
+  // Walks a container's children, accumulating runs of inline content into a
+  // buffer and flushing them as a paragraph at each block boundary. Inline
+  // children are pulled once via htmlText and never recursed (no double count);
+  // boundary children (whitelisted blocks or nested containers) are visited.
+  function flushContainer(
+    container: HtmlElement,
+    context: { readonly listDepth: number; readonly listOrdered: boolean | null },
+  ): void {
+    let run: string[] = [];
+    let anchor: HtmlElement | null = null;
+    const flush = () => {
+      const text = run.join(" ").replace(/\s+/g, " ").trim();
+      if (text) addBlock(anchor ?? container, "paragraph", text);
+      run = [];
+      anchor = null;
+    };
+    for (const child of container.childNodes) {
+      if (isHtmlElement(child)) {
+        const childTag = child.tagName.toLowerCase();
+        if (INLINE_TAGS.has(childTag) && !containsBlockProducer(child)) {
+          const text = htmlText(child);
+          if (text) {
+            run.push(text);
+            anchor ??= child;
+          }
+          continue;
+        }
+        flush();
+        visit(child, context);
+      } else if (child.nodeName === "#text" && "value" in child) {
+        run.push(child.value);
+      }
+    }
+    flush();
+  }
+
   visit(document, { listDepth: 0, listOrdered: null });
   const resolvedTitle =
     title ?? blocks.find((block) => block.type === "heading")?.text ?? fallbackTitle(filename);
   return {
     blocks,
-    diagnostics: blocks.length
-      ? []
-      : [
-          {
-            code: "EMPTY_DOCUMENT",
-            message: "The document contains no indexable text.",
-            severity: "warning",
-          },
-        ],
+    diagnostics:
+      blocks.length || options.suppressEmptyDiagnostic
+        ? []
+        : [
+            {
+              code: "EMPTY_DOCUMENT",
+              message: "The document contains no indexable text.",
+              severity: "warning",
+            },
+          ],
     format: options.format ?? "html",
     language: null,
     metadata: options.metadata ?? {},
