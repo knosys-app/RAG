@@ -64,6 +64,7 @@ const threadSummary = {
   id: THREAD_ID,
   lastMessageAt: NOW,
   lastMessagePreview: "Store seeds in a cool, dry place.",
+  memoryExcluded: false,
   messageCount: 2,
   title: "Seed storage",
   updatedAt: NOW,

@@ -277,6 +277,20 @@ export class EngineClient {
     );
   }
 
+  public async setThreadMemoryExclusion(
+    threadId: string,
+    excluded: boolean,
+  ): Promise<ChatThreadSummary> {
+    await this.start();
+    return chatThreadSummarySchema.parse(
+      await this.#request({
+        id: randomUUID(),
+        method: "engine.memory.setThreadExclusion",
+        params: { excluded, threadId },
+      }),
+    );
+  }
+
   public async listChatFolders(): Promise<readonly ChatFolder[]> {
     await this.start();
     return chatFolderListSchema.parse(

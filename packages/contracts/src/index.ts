@@ -1018,6 +1018,7 @@ export const chatThreadSummarySchema = z
     id: z.uuid(),
     lastMessageAt: z.iso.datetime().nullable(),
     lastMessagePreview: z.string().max(512).nullable(),
+    memoryExcluded: z.boolean(),
     messageCount: boundedNonnegativeIntegerSchema,
     title: z.string().min(1).max(512),
     updatedAt: z.iso.datetime(),
@@ -1305,6 +1306,7 @@ export const chatDeleteFolderResultSchema = z
   })
   .strict();
 export const chatMoveThreadResultSchema = chatThreadSummarySchema;
+export const memorySetThreadExclusionResultSchema = chatThreadSummarySchema;
 export const libraryDeleteDocumentResultSchema = z
   .object({
     deletedDocumentId: z.uuid(),
@@ -1543,6 +1545,19 @@ export const chatRenameThreadRequestSchema = z
   })
   .strict();
 
+export const memorySetThreadExclusionRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.setThreadExclusion"),
+    params: z
+      .object({
+        excluded: z.boolean(),
+        threadId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const chatListFoldersRequestSchema = z
   .object({
     id: z.uuid(),
@@ -1672,6 +1687,7 @@ export const ipcRequestSchema = z.discriminatedUnion("method", [
   chatCancelRequestSchema,
   chatDeleteThreadRequestSchema,
   chatRenameThreadRequestSchema,
+  memorySetThreadExclusionRequestSchema,
   chatListFoldersRequestSchema,
   chatCreateFolderRequestSchema,
   chatRenameFolderRequestSchema,
@@ -1895,6 +1911,19 @@ export const engineChatRenameThreadRequestSchema = z
   })
   .strict();
 
+export const engineMemorySetThreadExclusionRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.setThreadExclusion"),
+    params: z
+      .object({
+        excluded: z.boolean(),
+        threadId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const engineLibraryDeleteDocumentRequestSchema = z
   .object({
     id: z.uuid(),
@@ -2083,6 +2112,7 @@ export const engineRequestSchema = z.discriminatedUnion("method", [
   engineChatCancelRequestSchema,
   engineChatDeleteThreadRequestSchema,
   engineChatRenameThreadRequestSchema,
+  engineMemorySetThreadExclusionRequestSchema,
   engineChatListFoldersRequestSchema,
   engineChatCreateFolderRequestSchema,
   engineChatRenameFolderRequestSchema,
@@ -2168,6 +2198,12 @@ export type ChatMessageRole = z.infer<typeof chatMessageRoleSchema>;
 export type ChatMessageStatus = z.infer<typeof chatMessageStatusSchema>;
 export type ChatRenameThreadRequest = z.infer<typeof chatRenameThreadRequestSchema>;
 export type ChatRenameThreadResult = z.infer<typeof chatRenameThreadResultSchema>;
+export type MemorySetThreadExclusionRequest = z.infer<
+  typeof memorySetThreadExclusionRequestSchema
+>;
+export type MemorySetThreadExclusionResult = z.infer<
+  typeof memorySetThreadExclusionResultSchema
+>;
 export type ChatRoutingEvent = z.infer<typeof chatRoutingEventSchema>;
 export type AnswerRoutingDiagnostics = z.infer<typeof answerRoutingDiagnosticsSchema>;
 export type ChatSendRequest = z.infer<typeof chatSendRequestSchema>;
@@ -2313,6 +2349,9 @@ export interface KnosysDesktopApi {
     replaceDocument(documentId: string): Promise<ImportSelectionResult>;
     reprocessDocument(documentId: string): Promise<LibrarySnapshot>;
     search(query: string): Promise<readonly SearchResult[]>;
+  };
+  readonly memory: {
+    setThreadExclusion(threadId: string, excluded: boolean): Promise<ChatThreadSummary>;
   };
   readonly models: {
     cancelPull(model: RecommendedModelName): Promise<ModelsCancelPullResult>;

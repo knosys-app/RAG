@@ -44,9 +44,20 @@ export interface ConversationMessage {
   readonly role: "assistant" | "user";
 }
 
+// A compact, dated summary of one of the user's other conversations, recalled
+// because it may be relevant to the current question.
+export interface RecalledMemory {
+  readonly content: string;
+  readonly id: string;
+  readonly threadDate: string;
+  readonly threadTitle: string;
+}
+
 export interface QuestionContextualizationRequest {
   readonly history: readonly ConversationMessage[];
+  readonly memories?: readonly RecalledMemory[];
   readonly question: string;
+  readonly userFacts?: readonly string[];
 }
 
 export interface GroundingEvidence {

@@ -48,6 +48,7 @@ import {
   MEMORY_SUMMARY_PROMPT_VERSION,
   OllamaAdapter,
   QUERY_EMBEDDING_INSTRUCTION_VERSION,
+  QUESTION_CONTEXTUALIZATION_MEMORY_VERSION,
   QUESTION_CONTEXTUALIZATION_VERSION,
   THREAD_SUMMARY_RESULT_SCHEMA,
   UNCONFIGURED_GENERATION_PROFILE,
@@ -108,6 +109,7 @@ import {
   type EmbeddingProfile,
   type EvidenceResult,
   type LibrarySnapshot,
+  type MemorySearchResult,
   type MemorySummaryWorkItem,
   type SearchResult,
   type SemanticIndexJob,
@@ -126,6 +128,9 @@ const MAX_CONVERSATION_HISTORY_MESSAGES = 8;
 const MAX_CONTEXTUALIZED_QUESTION_CHARACTERS = 8_000;
 const MEMORY_MAINTENANCE_BATCH_SIZE = 16;
 const MEMORY_EMBEDDING_BATCH_SIZE = 32;
+const MEMORY_RECALL_TOP_K = 3;
+const MEMORY_RECALL_POOL_SIZE = 20;
+const MEMORY_RECALL_RRF_K = 60;
 const MAX_MEMORY_SOURCE_MESSAGES = 16;
 const MAX_MEMORY_SOURCE_CHARACTERS = 16_000;
 const MAX_MEMORY_SOURCE_MESSAGE_CHARACTERS = 3_000;
@@ -387,9 +392,25 @@ export interface RagChatThreadSummary {
   readonly id: string;
   readonly lastMessageAt: string | null;
   readonly lastMessagePreview: string | null;
+  readonly memoryExcluded: boolean;
   readonly messageCount: number;
   readonly title: string;
   readonly updatedAt: string;
+}
+
+// One recalled cross-conversation memory, identified by a K-prefixed ID that
+// never collides with the E/S grammars used for evidence and statements.
+export interface RecalledThreadMemory {
+  readonly content: string;
+  readonly id: string;
+  readonly threadDate: string;
+  readonly threadId: string;
+  readonly threadTitle: string;
+}
+
+export interface RecalledMemoryContext {
+  readonly memories: readonly RecalledThreadMemory[];
+  readonly userFacts: readonly string[];
 }
 
 export interface RagChatFolder {
@@ -851,6 +872,35 @@ function renderMemorySummaryText(summary: ThreadSummaryResult): string {
 function parseStoredThreadSummary(summaryJson: object): ThreadSummaryResult | null {
   const parsed = THREAD_SUMMARY_RESULT_SCHEMA.safeParse(summaryJson);
   return parsed.success ? parsed.data : null;
+}
+
+// Reciprocal-rank fusion over the lexical and vector memory rankings. Kept
+// separate from the document HybridRetriever on purpose: the document
+// retrieval trace feeds confidence calibration and must stay untouched by
+// memory recall.
+function fuseMemorySearchResults(
+  lexical: readonly MemorySearchResult[],
+  vector: readonly MemorySearchResult[],
+): readonly MemorySearchResult[] {
+  const fused = new Map<string, { result: MemorySearchResult; score: number }>();
+  for (const pool of [lexical, vector]) {
+    pool.forEach((result, index) => {
+      const contribution = 1 / (MEMORY_RECALL_RRF_K + index + 1);
+      const entry = fused.get(result.threadId);
+      if (entry === undefined) {
+        fused.set(result.threadId, { result, score: contribution });
+      } else {
+        entry.score += contribution;
+      }
+    });
+  }
+  return [...fused.values()]
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        (left.result.threadId < right.result.threadId ? -1 : 1),
+    )
+    .map(({ result }) => result);
 }
 
 function rethrowIfAborted(error: unknown, signal: AbortSignal): void {
@@ -1403,6 +1453,26 @@ export class KnowledgeEngine {
     return toThreadSummary(summary);
   }
 
+  public setThreadMemoryExclusion(
+    threadId: string,
+    excluded: boolean,
+  ): RagChatThreadSummary {
+    this.#assertOpen();
+    if (threadId.trim().length === 0) {
+      throw new EngineOperationError("INVALID_REQUEST", "A thread ID is required.");
+    }
+    const summary = this.#database.setThreadMemoryExclusion(threadId, excluded);
+    if (summary === null) {
+      throw new EngineOperationError(
+        "CHAT_THREAD_NOT_FOUND",
+        `Chat thread ${threadId} does not exist.`,
+      );
+    }
+    // A re-included thread becomes summarizable again right away.
+    if (!excluded) this.#startMemoryMaintenance();
+    return toThreadSummary(summary);
+  }
+
   public listChatFolders(): readonly RagChatFolder[] {
     this.#assertOpen();
     return this.#database.listChatFolders().map((folder) => ({ ...folder }));
@@ -1897,6 +1967,51 @@ export class KnowledgeEngine {
     }
   }
 
+  // Recall relevant cross-conversation memories for a question. Strictly
+  // best-effort and fully outside the document evidence pool: failures leave
+  // the chat memory-less rather than failing it.
+  async #retrieveMemories(
+    question: string,
+    excludeThreadId: string,
+    signal: AbortSignal,
+  ): Promise<RecalledMemoryContext> {
+    const userFacts = this.#database.listUserFacts().map(({ fact }) => fact);
+    if (this.#database.countThreadMemories(excludeThreadId) === 0) {
+      return { memories: [], userFacts };
+    }
+    const lexical = this.#database.searchMemoryLexical(
+      question,
+      MEMORY_RECALL_POOL_SIZE,
+      excludeThreadId,
+    );
+    let vector: readonly MemorySearchResult[] = [];
+    const profile = this.#embeddingProfile;
+    if (profile !== null) {
+      try {
+        const embedding = await this.#embeddingProvider.embedQuery(question, { signal });
+        vector = this.#database.searchMemoryVectors(
+          profile.id,
+          embedding,
+          MEMORY_RECALL_POOL_SIZE,
+          excludeThreadId,
+        );
+      } catch (error) {
+        // Vector recall degrades to lexical-only when embedding fails.
+        rethrowIfAborted(error, signal);
+      }
+    }
+    const memories = fuseMemorySearchResults(lexical, vector)
+      .slice(0, MEMORY_RECALL_TOP_K)
+      .map((result, index) => ({
+        content: result.content,
+        id: `K${index + 1}`,
+        threadDate: result.threadUpdatedAt.slice(0, 10),
+        threadId: result.threadId,
+        threadTitle: result.threadTitle,
+      }));
+    return { memories, userFacts };
+  }
+
   // Background distillation of finished conversations into retrievable
   // memories. Single-flight like the embedding backfill: concurrent triggers
   // coalesce into one re-run after the current pass finishes.
@@ -2051,12 +2166,41 @@ export class KnowledgeEngine {
     try {
       this.#updateAndEmitStatus(active, "retrieving");
       active.controller.signal.throwIfAborted();
+      let memoryContext: RecalledMemoryContext = { memories: [], userFacts: [] };
+      try {
+        memoryContext = await this.#retrieveMemories(
+          question,
+          active.threadId,
+          active.controller.signal,
+        );
+      } catch (error) {
+        // Memory recall must never fail the chat; the run proceeds without it.
+        rethrowIfAborted(error, active.controller.signal);
+      }
+      const hasMemoryContext =
+        memoryContext.memories.length > 0 || memoryContext.userFacts.length > 0;
       let groundedQuestion = question;
       let questionContextualizationVersion: string | null = null;
-      if (active.conversationHistory.length > 0) {
+      if (active.conversationHistory.length > 0 || hasMemoryContext) {
         groundedQuestion = (
           await active.questionContextualizer.contextualizeQuestion(
-            { history: active.conversationHistory, question },
+            {
+              history: active.conversationHistory,
+              question,
+              ...(hasMemoryContext
+                ? {
+                    memories: memoryContext.memories.map(
+                      ({ content, id, threadDate, threadTitle }) => ({
+                        content,
+                        id,
+                        threadDate,
+                        threadTitle,
+                      }),
+                    ),
+                    userFacts: memoryContext.userFacts,
+                  }
+                : {}),
+            },
             { signal: active.controller.signal },
           )
         ).trim();
@@ -2069,7 +2213,9 @@ export class KnowledgeEngine {
             "The conversation context could not be resolved into a valid question.",
           );
         }
-        questionContextualizationVersion = QUESTION_CONTEXTUALIZATION_VERSION;
+        questionContextualizationVersion = hasMemoryContext
+          ? QUESTION_CONTEXTUALIZATION_MEMORY_VERSION
+          : QUESTION_CONTEXTUALIZATION_VERSION;
       }
       active.controller.signal.throwIfAborted();
       if (active.mode === "labeled-hybrid") {

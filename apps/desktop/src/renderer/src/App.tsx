@@ -200,6 +200,9 @@ export function App(): ReactNode {
             setPendingFolderId(null);
             setView("chat");
           }}
+          onSetThreadMemoryExclusion={(threadId, excluded) => {
+            void threads.setMemoryExclusion(threadId, excluded);
+          }}
           onViewChange={setView}
           selectedThreadId={selectedThreadId}
           sourceCount={library.sourceCount}

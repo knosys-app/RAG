@@ -55,6 +55,7 @@ async function invoke<TSchema extends z.ZodType>(
     | "library.replaceDocument"
     | "library.reprocessDocument"
     | "library.search"
+    | "memory.setThreadExclusion"
     | "models.cancelPull"
     | "models.pull"
     | "preferences.get"
@@ -142,6 +143,14 @@ const api: KnosysDesktopApi = {
     },
     search: (query) =>
       invoke("library.search", { query }, searchResultSchema.array()),
+  },
+  memory: {
+    setThreadExclusion: (threadId, excluded) =>
+      invoke(
+        "memory.setThreadExclusion",
+        { excluded, threadId },
+        chatThreadSummarySchema,
+      ),
   },
   models: {
     cancelPull: (model) =>

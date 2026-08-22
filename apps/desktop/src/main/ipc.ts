@@ -290,6 +290,15 @@ export function registerIpcHandlers(engine: EngineClient): void {
                 parsed.data.params.title,
               ),
             });
+          case "memory.setThreadExclusion":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.setThreadMemoryExclusion(
+                parsed.data.params.threadId,
+                parsed.data.params.excluded,
+              ),
+            });
           case "chat.listFolders":
             return ipcResponseSchema.parse({
               id: parsed.data.id,

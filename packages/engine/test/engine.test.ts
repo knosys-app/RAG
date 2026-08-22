@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1905,6 +1905,103 @@ describe("conversation memory maintenance", () => {
         ]);
       },
       { interval: 10, timeout: 5_000 },
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("recalls other-thread memories and user facts into question contextualization", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-recall-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry when watering."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "project", fact: "Grows tomatoes on a balcony." }],
+      version: 1,
+    };
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const firstCompleted = first.events.find((event) => event.kind === "completed");
+    if (firstCompleted?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const memoryThreadId = firstCompleted.message.threadId;
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(memoryThreadId)).not.toBeNull();
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    // A brand-new thread has no history; recall alone must trigger
+    // memory-aware contextualization.
+    const second = await terminalEvent(engine, "What did we figure out about tomatoes?");
+    const secondCompleted = second.events.find((event) => event.kind === "completed");
+    expect(secondCompleted?.kind).toBe("completed");
+    const request = provider.contextualizationRequests.at(-1);
+    expect(request).toMatchObject({
+      history: [],
+      question: "What did we figure out about tomatoes?",
+      userFacts: ["Grows tomatoes on a balcony."],
+    });
+    expect(request?.memories).toMatchObject([
+      {
+        id: "K1",
+        threadTitle: "How should tomato plants be watered?",
+      },
+    ]);
+    expect(request?.memories?.[0]?.content).toContain("tomato watering");
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("scrubs excluded threads from recall and re-summarizes on re-inclusion", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-exclude-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [],
+      version: 1,
+    };
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = first.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).not.toBeNull();
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    const excluded = engine.setThreadMemoryExclusion(threadId, true);
+    expect(excluded.memoryExcluded).toBe(true);
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(
+      engine.listChatThreads().find((thread) => thread.id === threadId)?.memoryExcluded,
+    ).toBe(true);
+
+    // With the only memory scrubbed and no user facts, a new thread gets no
+    // contextualization at all.
+    const before = provider.contextualizationRequests.length;
+    await terminalEvent(engine, "What did we figure out about tomatoes?");
+    expect(provider.contextualizationRequests.length).toBe(before);
+
+    const included = engine.setThreadMemoryExclusion(threadId, false);
+    expect(included.memoryExcluded).toBe(false);
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).not.toBeNull();
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(() => engine.setThreadMemoryExclusion(randomUUID(), true)).toThrow(
+      /does not exist/,
     );
 
     engine.close();

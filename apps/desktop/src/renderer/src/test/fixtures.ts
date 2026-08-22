@@ -34,6 +34,7 @@ export const threadSummary = {
   id: THREAD_ID,
   lastMessageAt: NOW,
   lastMessagePreview: "Keep seeds cool and dry.",
+  memoryExcluded: false,
   messageCount: 2,
   title: "Seed storage",
   updatedAt: NOW,

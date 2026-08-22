@@ -1038,6 +1038,31 @@ describe("evidence confidence", () => {
       reasons: ["wide-uncertain-band"],
     });
   });
+
+  it("calibrates memory-informed contextualization the same way", () => {
+    const retrieval = vectorRetrievalResult([
+      { score: 0.55, text: "Marrowfern seed treatment details." },
+      { score: 0.45, text: "Other notes." },
+    ]);
+    const context = selectAnswerContext(retrieval);
+    // Cross-conversation memory only rewrites the question; retrieval signals
+    // stay valid, so the memory contextualization version must not push the
+    // answer onto the calibration-mismatch route either.
+    const assessment = assessEvidenceConfidence(
+      "How should Marrowfern seeds be pretreated?",
+      retrieval,
+      context,
+      {
+        ...referenceConfidenceEnvironment,
+        questionContextualizationVersion: "standalone-question-memory-v1",
+      },
+    );
+    expect(assessment).toMatchObject({
+      label: "uncertain",
+      reasons: ["wide-uncertain-band"],
+    });
+    expect(assessment.fingerprint).toContain("context-standalone-question-memory-v1");
+  });
 });
 
 describe("context selection", () => {

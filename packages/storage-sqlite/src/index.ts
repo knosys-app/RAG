@@ -2593,6 +2593,20 @@ export class KnosysDatabase {
     return Number(result.changes) === 1;
   }
 
+  public countThreadMemories(excludeThreadId: string | null = null): number {
+    return asNumber(
+      asRecord(
+        this.#database
+          .prepare(
+            `SELECT count(*) AS count FROM thread_memories tm
+             JOIN chat_threads t ON t.id = tm.thread_id
+             WHERE t.memory_excluded = 0 AND tm.thread_id != ?`,
+          )
+          .get(excludeThreadId ?? ""),
+      ).count,
+    );
+  }
+
   public searchMemoryLexical(
     query: string,
     limit = 20,
