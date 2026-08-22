@@ -5,13 +5,24 @@ import type {
   ChatMessage,
 } from "@knosys-rag/contracts";
 
-export type AnswerBlockKind = "conflict" | "library" | "model" | "plain";
+export type AnswerBlockKind = "conflict" | "library" | "memory" | "model" | "plain";
+
+// A recalled conversation memory backing a memory statement, resolved from
+// the provenance snapshot (so it survives source-thread deletion).
+export interface AnswerMemoryRef {
+  readonly content: string;
+  readonly id: string;
+  readonly threadDate: string;
+  readonly threadId: string;
+  readonly threadTitle: string;
+}
 
 export interface AnswerBlock {
   readonly citations: readonly ChatCitation[];
   readonly contradicting: readonly ChatCitation[];
   readonly key: string;
   readonly kind: AnswerBlockKind;
+  readonly memories: readonly AnswerMemoryRef[];
   readonly text: string;
 }
 
@@ -29,6 +40,7 @@ export interface FallbackStage {
 export interface AnswerModel {
   readonly blocks: readonly AnswerBlock[];
   readonly fallbackStages: readonly FallbackStage[];
+  readonly hasMemory: boolean;
   readonly hasModelKnowledge: boolean;
   readonly hasProvenance: boolean;
 }
@@ -46,6 +58,8 @@ function provenanceStageLabel(name: string): string {
   switch (name) {
     case "background":
       return "Background";
+    case "memory":
+      return "Memory";
     case "library":
       return "Library";
     case "reconciliation":
@@ -68,7 +82,7 @@ export function fallbackProvenanceStages(
     provenance.version === 1
       ? (["background", "library", "reconciliation", "synthesis", "verification"] as const)
       : (["library", "generation", "verification"] as const);
-  return names.flatMap((name) => {
+  const stages: FallbackStage[] = names.flatMap((name) => {
     const stage =
       provenance.version === 1
         ? provenance.stages[name as keyof AnswerProvenanceV1["stages"]]
@@ -77,6 +91,16 @@ export function fallbackProvenanceStages(
       ? []
       : [{ label: provenanceStageLabel(name), name, stage }];
   });
+  // A skipped memory stage (no relevant memories) is the normal case and not
+  // worth surfacing; only a failed recall is.
+  if (provenance.version === 3 && provenance.memory.stage.status === "failed") {
+    stages.push({
+      label: provenanceStageLabel("memory"),
+      name: "memory",
+      stage: provenance.memory.stage,
+    });
+  }
+  return stages;
 }
 
 export function describeFallbackStage(entry: FallbackStage): string {
@@ -96,16 +120,30 @@ export function normalizeAnswer(message: ChatMessage): AnswerModel {
       .map((evidenceId) => citationsByEvidenceId.get(evidenceId))
       .filter((citation): citation is ChatCitation => citation !== undefined);
 
-  if (provenance?.version === 2) {
+  if (provenance?.version === 2 || provenance?.version === 3) {
+    const memoriesById = new Map(
+      provenance.version === 3
+        ? provenance.memory.memories.map((memory) => [memory.id, memory])
+        : [],
+    );
     return {
       blocks: provenance.statements.map((statement) => ({
         citations: resolve(statement.evidenceIds),
         contradicting: [],
         key: statement.statementId,
         kind: statement.kind,
+        memories:
+          "memoryIds" in statement
+            ? statement.memoryIds
+                .map((memoryId) => memoriesById.get(memoryId))
+                .filter((memory): memory is AnswerMemoryRef => memory !== undefined)
+            : [],
         text: statement.text,
       })),
       fallbackStages: fallbackProvenanceStages(provenance),
+      hasMemory:
+        provenance.version === 3 &&
+        provenance.statements.some(({ kind }) => kind === "memory"),
       hasModelKnowledge: provenance.statements.some(({ kind }) => kind === "model"),
       hasProvenance: true,
     };
@@ -130,9 +168,11 @@ export function normalizeAnswer(message: ChatMessage): AnswerModel {
             : statement.sectionKind === "conflict"
               ? "conflict"
               : "library",
+        memories: [],
         text: statement.text,
       })),
       fallbackStages: fallbackProvenanceStages(provenance),
+      hasMemory: false,
       hasModelKnowledge: statements.some(
         ({ sectionKind }) => sectionKind === "model-background",
       ),
@@ -149,11 +189,13 @@ export function normalizeAnswer(message: ChatMessage): AnswerModel {
               contradicting: [],
               key: message.id,
               kind: "plain",
+              memories: [],
               text: message.content,
             },
           ]
         : [],
     fallbackStages: [],
+    hasMemory: false,
     hasModelKnowledge: false,
     hasProvenance: false,
   };

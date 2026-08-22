@@ -939,9 +939,112 @@ export const answerProvenanceV2Schema = z
     });
   });
 
+const memoryRecallIdSchema = z.string().regex(/^K[1-9]\d*$/).max(32);
+
+const answerProvenanceV3StatementSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).min(1).max(128).refine(uniqueIds),
+      kind: z.literal("library"),
+      memoryIds: z.array(memoryRecallIdSchema).length(0),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).length(0),
+      kind: z.literal("memory"),
+      memoryIds: z.array(memoryRecallIdSchema).min(1).max(8).refine(uniqueIds),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).length(0),
+      kind: z.literal("model"),
+      memoryIds: z.array(memoryRecallIdSchema).length(0),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+]);
+
+// A recalled conversation memory snapshotted at answer time. threadId is a
+// soft link: the source thread may be renamed or deleted later, so title,
+// date, and content are preserved here.
+export const recalledMemoryProvenanceSchema = z
+  .object({
+    content: z.string().min(1).max(4_000),
+    id: memoryRecallIdSchema,
+    threadDate: z.string().min(1).max(64),
+    threadId: z.uuid(),
+    threadTitle: z.string().min(1).max(512),
+  })
+  .strict();
+
+export const answerProvenanceV3Schema = z
+  .object({
+    generationModel: provenanceGenerationModelSchema,
+    memory: z
+      .object({
+        memories: z
+          .array(recalledMemoryProvenanceSchema)
+          .max(8)
+          .refine((memories) => uniqueIds(memories.map(({ id }) => id)), {
+            message: "Recalled memory IDs must be unique",
+          }),
+        stage: provenanceStageSchema,
+      })
+      .strict(),
+    mode: z.literal("labeled-hybrid"),
+    promptVersions: z
+      .object({
+        contextualization: boundedIdentifierSchema.nullable(),
+        evidenceAnswer: boundedIdentifierSchema,
+        groundedDerivation: boundedIdentifierSchema,
+        modelDraft: boundedIdentifierSchema.nullable(),
+        verification: boundedIdentifierSchema,
+      })
+      .strict(),
+    stages: z
+      .object({
+        generation: provenanceStageSchema,
+        library: provenanceStageSchema,
+        verification: provenanceStageSchema,
+      })
+      .strict(),
+    statements: z.array(answerProvenanceV3StatementSchema).max(144),
+    version: z.literal(3),
+  })
+  .strict()
+  .superRefine((provenance, context) => {
+    const recalledIds = new Set(provenance.memory.memories.map(({ id }) => id));
+    provenance.statements.forEach((statement, index) => {
+      if (statement.statementId !== `S${index + 1}`) {
+        context.addIssue({
+          code: "custom",
+          message: "Statement IDs must be unique and consecutive in array order.",
+          path: ["statements", index, "statementId"],
+        });
+      }
+      statement.memoryIds.forEach((memoryId, memoryIndex) => {
+        if (!recalledIds.has(memoryId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Every referenced memory must be recorded in memory.memories.",
+            path: ["statements", index, "memoryIds", memoryIndex],
+          });
+        }
+      });
+    });
+  });
+
 export const answerProvenanceSchema = z.discriminatedUnion("version", [
   answerProvenanceV1Schema,
   answerProvenanceV2Schema,
+  answerProvenanceV3Schema,
 ]);
 
 export const chatMessageSchema = z

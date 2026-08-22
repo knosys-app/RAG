@@ -135,6 +135,7 @@ class FakeInferenceProvider implements RagInferenceProvider {
   public failPull = false;
   public pullBlocksAfterFirstFrame = false;
   public readonly pullRequests: string[] = [];
+  public includeMemoryKnowledge = false;
   public includeModelKnowledge = false;
   public reconciliationBlocks = false;
   public reconciliationKind: "supported" | "contradicted" | "mixed" | "unverified" =
@@ -270,13 +271,25 @@ class FakeInferenceProvider implements RagInferenceProvider {
       : [{
           evidenceIds: [request.evidence[0]!.id],
           kind: "library" as const,
+          memoryIds: [],
           statementId: "S1" as const,
           text: "Keep tomato leaves dry.",
         }];
+    const memory = request.memories?.[0];
+    if (this.includeMemoryKnowledge && memory !== undefined) {
+      statements.push({
+        evidenceIds: [],
+        kind: "memory",
+        memoryIds: [memory.id],
+        statementId: `S${statements.length + 1}` as `S${number}`,
+        text: "You settled on drip irrigation for the balcony tomatoes.",
+      });
+    }
     if (request.evidence.length === 0 || this.includeModelKnowledge) {
       statements.push({
         evidenceIds: [],
         kind: "model",
+        memoryIds: [],
         statementId: `S${statements.length + 1}` as `S${number}`,
         text: "Keep tomato leaves dry.",
       });
@@ -295,6 +308,7 @@ class FakeInferenceProvider implements RagInferenceProvider {
         statement: {
           evidenceIds: [request.evidence[0]!.id],
           kind: "library" as const,
+          memoryIds: [],
           statementId: "S1" as const,
           text: "Keep tomato leaves dry.",
         },
@@ -1132,7 +1146,7 @@ describe("production RAG orchestration", () => {
     engine.close();
   });
 
-  it("defaults to retrieval-first verified hybrid and persists V2 provenance", async () => {
+  it("defaults to retrieval-first verified hybrid and persists V3 provenance", async () => {
     const root = await mkdtemp(join(tmpdir(), "knosys-rag-hybrid-default-"));
     const dataRoot = join(root, "app-data");
     const source = join(root, "tomatoes.txt");
@@ -1204,7 +1218,7 @@ describe("production RAG orchestration", () => {
             text: "Keep tomato leaves dry.",
           },
         ],
-        version: 2,
+        version: 3,
       },
       citations: [{ evidenceId: "E1" }],
       content: "Keep tomato leaves dry.",
@@ -1224,7 +1238,7 @@ describe("production RAG orchestration", () => {
     });
     expect(reopened.getChatThread(threadId).messages.at(-1)?.answerProvenance).toMatchObject({
       mode: "labeled-hybrid",
-      version: 2,
+      version: 3,
     });
     reopened.close();
   });
@@ -1254,7 +1268,7 @@ describe("production RAG orchestration", () => {
             statementId: "S1",
           },
         ],
-        version: 2,
+        version: 3,
       },
       citations: [],
       content: "Keep tomato leaves dry.",
@@ -1306,7 +1320,7 @@ describe("production RAG orchestration", () => {
       answerProvenance: {
         stages: { verification: { status: "failed" } },
         statements: [{ evidenceIds: [], kind: "model", statementId: "S1" }],
-        version: 2,
+        version: 3,
       },
       citations: [],
       status: "completed",
@@ -1345,12 +1359,13 @@ describe("production RAG orchestration", () => {
       expect(completed.message.content).toBe("Keep tomato leaves dry.");
       expect(completed.message.citations).toHaveLength(1);
       const provenance = completed.message.answerProvenance;
-      if (provenance?.version !== 2) throw new Error("Expected V2 provenance.");
+      if (provenance?.version !== 3) throw new Error("Expected V3 provenance.");
       expect(provenance.stages[failedStage].status).toBe("failed");
       expect(provenance.statements).toEqual([
         {
           evidenceIds: ["E1"],
           kind: "library",
+          memoryIds: [],
           statementId: "S1",
           text: "Keep tomato leaves dry.",
         },
@@ -1953,6 +1968,81 @@ describe("conversation memory maintenance", () => {
       },
     ]);
     expect(request?.memories?.[0]?.content).toContain("tomato watering");
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("labels recalled memories as cited memory statements in V3 provenance", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-cite-");
+    provider.threadSummaryResult = {
+      conclusions: ["Drip irrigation suits balcony tomatoes."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [],
+      version: 1,
+    };
+    const first = await terminalEvent(
+      engine,
+      "How should tomato plants be watered?",
+      undefined,
+      null,
+    );
+    const firstCompleted = first.events.find((event) => event.kind === "completed");
+    if (firstCompleted?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const memoryThreadId = firstCompleted.message.threadId;
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(memoryThreadId)).not.toBeNull();
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    provider.includeMemoryKnowledge = true;
+    const second = await terminalEvent(
+      engine,
+      "What did we figure out about tomatoes?",
+      undefined,
+      null,
+    );
+    const completed = second.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+
+    // The evidence-first generation and verification both received the
+    // recalled memory.
+    expect(provider.evidenceFirstAnswerRequests.at(-1)?.memories).toMatchObject([
+      { id: "K1", threadTitle: "How should tomato plants be watered?" },
+    ]);
+    expect(provider.evidenceFirstVerificationRequests.at(-1)?.memories).toMatchObject([
+      { id: "K1" },
+    ]);
+
+    const provenance = completed.message.answerProvenance;
+    if (provenance?.version !== 3) throw new Error("Expected V3 provenance.");
+    expect(provenance.memory).toMatchObject({
+      memories: [
+        {
+          id: "K1",
+          threadId: memoryThreadId,
+          threadTitle: "How should tomato plants be watered?",
+        },
+      ],
+      stage: { status: "completed" },
+    });
+    const memoryStatement = provenance.statements.find(({ kind }) => kind === "memory");
+    expect(memoryStatement).toMatchObject({ evidenceIds: [], memoryIds: ["K1"] });
+    expect(completed.message.content).toContain(
+      "You settled on drip irrigation for the balcony tomatoes.",
+    );
+    // Memory statements never become library citations.
+    const citedEvidenceIds = completed.message.citations.map(
+      ({ evidenceId }) => evidenceId,
+    );
+    expect(citedEvidenceIds).not.toContain("K1");
 
     engine.close();
     database.close();

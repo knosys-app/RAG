@@ -223,6 +223,14 @@ export function App(): ReactNode {
             onDismissLoadError={() => {
               setLoadError(null);
             }}
+            onOpenMemoryThread={(threadId) => {
+              // A memory's source thread may have been deleted since the
+              // answer was written; the chip is inert in that case.
+              if (!threads.threads.some((candidate) => candidate.id === threadId)) return;
+              selectThread(threadId);
+              setPendingFolderId(null);
+              setView("chat");
+            }}
             onSend={sendMessage}
             pendingFolderName={
               pendingFolderId === null

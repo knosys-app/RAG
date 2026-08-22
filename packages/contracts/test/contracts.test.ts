@@ -5,6 +5,7 @@ import {
   appPreferencesSchema,
   answerProvenanceV1Schema,
   answerProvenanceV2Schema,
+  answerProvenanceV3Schema,
   chatAcceptanceSchema,
   chatDeleteFolderResultSchema,
   chatDeleteThreadResultSchema,
@@ -277,6 +278,34 @@ const answerProvenanceV2 = {
     },
   ],
   version: 2,
+} as const;
+
+const answerProvenanceV3 = {
+  ...answerProvenanceV2,
+  memory: {
+    memories: [
+      {
+        content: "Topics: seed saving | Conclusions: dry seeds fully before storage.",
+        id: "K1",
+        threadDate: "2026-08-10",
+        threadId: THREAD_ID,
+        threadTitle: "Seed saving",
+      },
+    ],
+    stage: { fallbackReason: null, status: "completed" },
+  },
+  statements: [
+    { ...answerProvenanceV2.statements[0], memoryIds: [] },
+    { ...answerProvenanceV2.statements[1], memoryIds: [] },
+    {
+      evidenceIds: [],
+      kind: "memory",
+      memoryIds: ["K1"],
+      statementId: "S3",
+      text: "You previously settled on drying seeds fully before storage.",
+    },
+  ],
+  version: 3,
 } as const;
 
 const ragStatus = {
@@ -604,6 +633,63 @@ describe("IPC contracts", () => {
         citations: [citation, secondCitation],
       }).success,
     ).toBe(true);
+  });
+
+  it("accepts V3 provenance with memory statements resolved from the memory block", () => {
+    expect(answerProvenanceV3Schema.safeParse(answerProvenanceV3).success).toBe(true);
+    expect(answerProvenanceSchema.safeParse(answerProvenanceV3).success).toBe(true);
+    // V2 still parses through the union so stored history keeps loading.
+    expect(answerProvenanceSchema.safeParse(answerProvenanceV2).success).toBe(true);
+    expect(
+      chatMessageSchema.safeParse({
+        ...completedAssistantMessage,
+        answerProvenance: answerProvenanceV3,
+        citations: [citation, secondCitation],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects V3 memory statements whose memories are missing or malformed", () => {
+    // A memoryId with no matching entry in memory.memories.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        memory: { ...answerProvenanceV3.memory, memories: [] },
+      }).success,
+    ).toBe(false);
+    // A memory statement citing evidence.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          answerProvenanceV3.statements[0],
+          answerProvenanceV3.statements[1],
+          { ...answerProvenanceV3.statements[2], evidenceIds: ["E1"] },
+        ],
+      }).success,
+    ).toBe(false);
+    // A library statement citing a memory.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          { ...answerProvenanceV3.statements[0], memoryIds: ["K1"] },
+          answerProvenanceV3.statements[1],
+          answerProvenanceV3.statements[2],
+        ],
+      }).success,
+    ).toBe(false);
+    // A memory statement without memory IDs.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          answerProvenanceV3.statements[0],
+          answerProvenanceV3.statements[1],
+          { ...answerProvenanceV3.statements[2], memoryIds: [] },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it("parses V2 provenance stored before modelDraft existed and defaults it to null", () => {

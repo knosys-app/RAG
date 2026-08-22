@@ -136,7 +136,10 @@ export interface ReconciliationEvidence {
 
 export interface EvidenceFirstStatement {
   readonly evidenceIds: readonly HybridEvidenceId[];
-  readonly kind: "library" | "model";
+  readonly kind: "library" | "memory" | "model";
+  // K-prefixed IDs of the recalled conversation memories backing a memory
+  // statement; empty for library and model statements.
+  readonly memoryIds: readonly string[];
   readonly statementId: HybridStatementId;
   readonly text: string;
 }
@@ -144,6 +147,9 @@ export interface EvidenceFirstStatement {
 export interface EvidenceFirstAnswerRequest {
   readonly evidence: readonly ReconciliationEvidence[];
   readonly libraryAnswer: string;
+  // Recalled cross-conversation memories; facts sourced from them come back
+  // as labeled memory statements citing the memory IDs.
+  readonly memories?: readonly RecalledMemory[];
   // The model's own closed-book answer, synthesized in as labeled model
   // statements for anything the library evidence does not cover. Optional so
   // callers that only want grounded output can omit it.
@@ -174,6 +180,7 @@ export interface EvidenceFirstVerificationAssessment {
 
 export interface EvidenceFirstVerificationRequest {
   readonly evidence: readonly ReconciliationEvidence[];
+  readonly memories?: readonly RecalledMemory[];
   readonly originalQuestion: string;
   readonly resolvedQuestion: string;
   readonly statements: readonly EvidenceFirstStatement[];

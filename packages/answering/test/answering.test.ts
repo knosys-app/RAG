@@ -883,12 +883,14 @@ describe("evidence-first hybrid answers", () => {
     {
       evidenceIds: ["E1" as const],
       kind: "library" as const,
+      memoryIds: [],
       statementId: "S1" as const,
       text: "The library establishes the first fact.",
     },
     {
       evidenceIds: [],
       kind: "model" as const,
+      memoryIds: [],
       statementId: "S2" as const,
       text: "The model adds useful background.",
     },
@@ -914,6 +916,7 @@ describe("evidence-first hybrid answers", () => {
             {
               evidenceIds: ["E3"],
               kind: "library",
+              memoryIds: [],
               statementId: "S1",
               text: "Unknown support.",
             },
@@ -930,6 +933,7 @@ describe("evidence-first hybrid answers", () => {
             {
               evidenceIds: ["E1"],
               kind: "model",
+              memoryIds: [],
               statementId: "S1",
               text: "Improperly grounded model knowledge.",
             },
@@ -937,6 +941,82 @@ describe("evidence-first hybrid answers", () => {
           version: 1,
         },
         evidenceIds,
+      ),
+    ).toThrow(/provenance kind/);
+  });
+
+  it("validates memory statements against the supplied memory IDs", () => {
+    const memoryIds = new Set(["K1"]);
+    expect(
+      validateEvidenceFirstAnswer(
+        {
+          statements: [
+            {
+              evidenceIds: [],
+              kind: "memory",
+              memoryIds: ["K1"],
+              statementId: "S1",
+              text: "A fact recalled from a past conversation.",
+            },
+          ],
+          version: 1,
+        },
+        evidenceIds,
+        memoryIds,
+      ),
+    ).toHaveLength(1);
+    expect(() =>
+      validateEvidenceFirstAnswer(
+        {
+          statements: [
+            {
+              evidenceIds: [],
+              kind: "memory",
+              memoryIds: ["K2"],
+              statementId: "S1",
+              text: "References a memory that was not recalled.",
+            },
+          ],
+          version: 1,
+        },
+        evidenceIds,
+        memoryIds,
+      ),
+    ).toThrow(/unknown memory/);
+    expect(() =>
+      validateEvidenceFirstAnswer(
+        {
+          statements: [
+            {
+              evidenceIds: [],
+              kind: "memory",
+              memoryIds: [],
+              statementId: "S1",
+              text: "A memory statement without memories.",
+            },
+          ],
+          version: 1,
+        },
+        evidenceIds,
+        memoryIds,
+      ),
+    ).toThrow(/provenance kind/);
+    expect(() =>
+      validateEvidenceFirstAnswer(
+        {
+          statements: [
+            {
+              evidenceIds: [],
+              kind: "model",
+              memoryIds: ["K1"],
+              statementId: "S1",
+              text: "Model knowledge cannot cite memories.",
+            },
+          ],
+          version: 1,
+        },
+        evidenceIds,
+        memoryIds,
       ),
     ).toThrow(/provenance kind/);
   });
@@ -978,6 +1058,7 @@ describe("evidence-first hybrid answers", () => {
       {
         evidenceIds: ["E1", "E2"],
         kind: "library",
+        memoryIds: [],
         statementId: "S1",
         text: "The canonical library claim.",
       },

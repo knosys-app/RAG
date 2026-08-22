@@ -22,6 +22,7 @@ interface ChatViewProps {
   readonly onCancel: () => Promise<string | null>;
   readonly onClearPendingFolder: () => void;
   readonly onDismissLoadError: () => void;
+  readonly onOpenMemoryThread: (threadId: string) => void;
   readonly onSend: (question: string, mode: AnswerMode) => Promise<string | null>;
   readonly pendingFolderName: string | null;
   readonly rag: UseRagStatus;
@@ -38,6 +39,7 @@ export function ChatView({
   onCancel,
   onClearPendingFolder,
   onDismissLoadError,
+  onOpenMemoryThread,
   onSend,
   pendingFolderName,
   rag,
@@ -119,6 +121,7 @@ export function ChatView({
         }
         messages={thread?.messages ?? []}
         onInspectEvidence={handleInspectEvidence}
+        onOpenMemoryThread={onOpenMemoryThread}
         threadLoading={threadLoading}
       />
       <AnimatePresence initial={false}>

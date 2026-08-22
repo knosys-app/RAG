@@ -86,7 +86,7 @@ import {
   type AnswerProvenanceStage,
   type AnswerRoutingDiagnostics,
   type AnswerProvenance,
-  type AnswerProvenanceV2,
+  type AnswerProvenanceV3,
   type EvidenceConfidenceEnvironment,
   type GroundedAnswerResult,
 } from "@knosys-rag/answering";
@@ -752,7 +752,8 @@ function hasCompletedHybridProvenance(message: ChatMessage): boolean {
   return (
     provenance.mode === "labeled-hybrid" &&
     ((provenance.version === 1 && Array.isArray(provenance.finalSections)) ||
-      (provenance.version === 2 && Array.isArray(provenance.statements)))
+      ((provenance.version === 2 || provenance.version === 3) &&
+        Array.isArray(provenance.statements)))
   );
 }
 
@@ -2167,15 +2168,20 @@ export class KnowledgeEngine {
       this.#updateAndEmitStatus(active, "retrieving");
       active.controller.signal.throwIfAborted();
       let memoryContext: RecalledMemoryContext = { memories: [], userFacts: [] };
+      let memoryStage = provenanceStage("skipped", "no-relevant-memories");
       try {
         memoryContext = await this.#retrieveMemories(
           question,
           active.threadId,
           active.controller.signal,
         );
+        if (memoryContext.memories.length > 0) {
+          memoryStage = provenanceStage("completed");
+        }
       } catch (error) {
         // Memory recall must never fail the chat; the run proceeds without it.
         rethrowIfAborted(error, active.controller.signal);
+        memoryStage = provenanceStage("failed", "memory-recall-failed");
       }
       const hasMemoryContext =
         memoryContext.memories.length > 0 || memoryContext.userFacts.length > 0;
@@ -2224,6 +2230,8 @@ export class KnowledgeEngine {
           question,
           groundedQuestion,
           questionContextualizationVersion,
+          memoryContext,
+          memoryStage,
         );
         return;
       }
@@ -2341,6 +2349,8 @@ export class KnowledgeEngine {
     originalQuestion: string,
     resolvedQuestion: string,
     questionContextualizationVersion: string | null,
+    memoryContext: RecalledMemoryContext,
+    memoryStage: AnswerProvenanceStage,
   ): Promise<void> {
     this.#updateAndEmitStatus(active, "retrieving");
     const retrievalResult = this.#withGroundingContext(
@@ -2374,6 +2384,15 @@ export class KnowledgeEngine {
         : { title: citation.source.sourceName }),
     }));
     const evidenceIds = new Set(evidence.map(({ id }) => id));
+    const recalledMemories = memoryContext.memories.map(
+      ({ content, id, threadDate, threadTitle }) => ({
+        content,
+        id,
+        threadDate,
+        threadTitle,
+      }),
+    );
+    const memoryIds = new Set(recalledMemories.map(({ id }) => id));
 
     this.#updateAndEmitStatus(active, "synthesizing");
     // The model's own answer to the question. It seeds synthesis (so parts the
@@ -2415,6 +2434,7 @@ export class KnowledgeEngine {
             libraryResult.plan.type === "answer"
               ? libraryResult.plan.answer
               : libraryResult.plan.reason,
+          ...(recalledMemories.length > 0 ? { memories: recalledMemories } : {}),
           ...(draftText ? { modelDraft: draftText } : {}),
           originalQuestion,
           resolvedQuestion,
@@ -2438,14 +2458,20 @@ export class KnowledgeEngine {
         );
       }
       active.controller.signal.throwIfAborted();
-      const statements = validateEvidenceFirstAnswer(generated, evidenceIds);
+      const statements = validateEvidenceFirstAnswer(generated, evidenceIds, memoryIds);
       generationStage = provenanceStage("completed");
 
       this.#updateAndEmitStatus(active, "verifying");
       try {
         const verification =
           await active.evidenceFirstVerificationProvider.verifyEvidenceFirstAnswer(
-            { evidence, originalQuestion, resolvedQuestion, statements },
+            {
+              evidence,
+              ...(recalledMemories.length > 0 ? { memories: recalledMemories } : {}),
+              originalQuestion,
+              resolvedQuestion,
+              statements,
+            },
             { signal: active.controller.signal },
           );
         active.controller.signal.throwIfAborted();
@@ -2477,8 +2503,12 @@ export class KnowledgeEngine {
     active.controller.signal.throwIfAborted();
     const rendered = renderEvidenceFirstNarrative(finalStatements);
     const content = rendered.length > 0 ? rendered : libraryResult.text;
-    const provenance: AnswerProvenanceV2 = {
+    const provenance: AnswerProvenanceV3 = {
       generationModel: { digest: active.modelDigest, model: active.model },
+      memory: {
+        memories: memoryContext.memories.map((memory) => ({ ...memory })),
+        stage: memoryStage,
+      },
       mode: "labeled-hybrid",
       promptVersions: {
         contextualization: questionContextualizationVersion,
@@ -2496,7 +2526,7 @@ export class KnowledgeEngine {
         verification: verificationStage,
       },
       statements: finalStatements,
-      version: 2,
+      version: 3,
     };
     const referencedEvidenceIds = new Set(
       finalStatements.flatMap(({ evidenceIds: statementEvidenceIds }) =>

@@ -395,6 +395,7 @@ export function renderHybridNarrative(
 export function validateEvidenceFirstAnswer(
   value: EvidenceFirstAnswerResult,
   evidenceIds: ReadonlySet<HybridEvidenceId>,
+  memoryIds: ReadonlySet<string> = new Set(),
 ): readonly EvidenceFirstStatement[] {
   if (value.version !== 1 || value.statements.length === 0) {
     invalidHybrid("Evidence-first generation must contain at least one statement.");
@@ -410,9 +411,19 @@ export function validateEvidenceFirstAnswer(
     if (statement.evidenceIds.some((id) => !evidenceIds.has(id))) {
       invalidHybrid("An evidence-first statement references unknown evidence.");
     }
+    if (new Set(statement.memoryIds).size !== statement.memoryIds.length) {
+      invalidHybrid("Evidence-first statement memory IDs must be unique.");
+    }
+    if (statement.memoryIds.some((id) => !memoryIds.has(id))) {
+      invalidHybrid("An evidence-first statement references an unknown memory.");
+    }
     if (
-      (statement.kind === "library" && statement.evidenceIds.length === 0) ||
-      (statement.kind === "model" && statement.evidenceIds.length > 0)
+      (statement.kind === "library" &&
+        (statement.evidenceIds.length === 0 || statement.memoryIds.length > 0)) ||
+      (statement.kind === "model" &&
+        (statement.evidenceIds.length > 0 || statement.memoryIds.length > 0)) ||
+      (statement.kind === "memory" &&
+        (statement.memoryIds.length === 0 || statement.evidenceIds.length > 0))
     ) {
       invalidHybrid("An evidence-first statement has an invalid provenance kind.");
     }
@@ -444,6 +455,7 @@ export function canonicalEvidenceFirstStatements(
   return libraryClaims.map((claim, index) => ({
     evidenceIds: claim.evidenceIds,
     kind: "library",
+    memoryIds: [],
     statementId: `S${index + 1}`,
     text: claim.text,
   }));
@@ -467,6 +479,7 @@ export function modelStatementsFromClaims(
     .map((text, index) => ({
       evidenceIds: [],
       kind: "model",
+      memoryIds: [],
       statementId: `S${index + 1}`,
       text,
     }));

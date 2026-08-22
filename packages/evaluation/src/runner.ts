@@ -211,6 +211,7 @@ class DeterministicEvaluationProvider implements RagInferenceProvider {
             {
               evidenceIds: [],
               kind: "model" as const,
+              memoryIds: [],
               statementId: "S1" as const,
               text: "Deterministic evaluation background.",
             },
@@ -219,6 +220,7 @@ class DeterministicEvaluationProvider implements RagInferenceProvider {
             {
               evidenceIds: [request.evidence[0]!.id],
               kind: "library" as const,
+              memoryIds: [],
               statementId: "S1" as const,
               text: request.libraryAnswer,
             },
