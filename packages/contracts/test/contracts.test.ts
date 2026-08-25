@@ -5,6 +5,7 @@ import {
   appPreferencesSchema,
   answerProvenanceV1Schema,
   answerProvenanceV2Schema,
+  answerProvenanceV3Schema,
   chatAcceptanceSchema,
   chatDeleteFolderResultSchema,
   chatDeleteThreadResultSchema,
@@ -32,6 +33,7 @@ import {
   KnosysApiError,
   libraryDeleteDocumentResultSchema,
   librarySnapshotSchema,
+  memoryStatusSchema,
   modelPullEventSchema,
   modelsCancelPullResultSchema,
   modelsPullResultSchema,
@@ -40,6 +42,7 @@ import {
   ragGetStatusResultSchema,
   sourceGetWindowResultSchema,
   systemStatusResponseSchema,
+  userFactSchema,
 } from "../src/index.js";
 
 const REQUEST_ID = "a9da48a8-7aca-4ef1-a7b8-2698b646a944";
@@ -64,12 +67,14 @@ const threadSummary = {
   id: THREAD_ID,
   lastMessageAt: NOW,
   lastMessagePreview: "Store seeds in a cool, dry place.",
+  memoryExcluded: false,
   messageCount: 2,
   title: "Seed storage",
   updatedAt: NOW,
 };
 
 const FOLDER_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const FACT_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 const folderSummary = {
   createdAt: NOW,
@@ -276,6 +281,34 @@ const answerProvenanceV2 = {
     },
   ],
   version: 2,
+} as const;
+
+const answerProvenanceV3 = {
+  ...answerProvenanceV2,
+  memory: {
+    memories: [
+      {
+        content: "Topics: seed saving | Conclusions: dry seeds fully before storage.",
+        id: "K1",
+        threadDate: "2026-08-10",
+        threadId: THREAD_ID,
+        threadTitle: "Seed saving",
+      },
+    ],
+    stage: { fallbackReason: null, status: "completed" },
+  },
+  statements: [
+    { ...answerProvenanceV2.statements[0], memoryIds: [] },
+    { ...answerProvenanceV2.statements[1], memoryIds: [] },
+    {
+      evidenceIds: [],
+      kind: "memory",
+      memoryIds: ["K1"],
+      statementId: "S3",
+      text: "You previously settled on drying seeds fully before storage.",
+    },
+  ],
+  version: 3,
 } as const;
 
 const ragStatus = {
@@ -603,6 +636,63 @@ describe("IPC contracts", () => {
         citations: [citation, secondCitation],
       }).success,
     ).toBe(true);
+  });
+
+  it("accepts V3 provenance with memory statements resolved from the memory block", () => {
+    expect(answerProvenanceV3Schema.safeParse(answerProvenanceV3).success).toBe(true);
+    expect(answerProvenanceSchema.safeParse(answerProvenanceV3).success).toBe(true);
+    // V2 still parses through the union so stored history keeps loading.
+    expect(answerProvenanceSchema.safeParse(answerProvenanceV2).success).toBe(true);
+    expect(
+      chatMessageSchema.safeParse({
+        ...completedAssistantMessage,
+        answerProvenance: answerProvenanceV3,
+        citations: [citation, secondCitation],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects V3 memory statements whose memories are missing or malformed", () => {
+    // A memoryId with no matching entry in memory.memories.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        memory: { ...answerProvenanceV3.memory, memories: [] },
+      }).success,
+    ).toBe(false);
+    // A memory statement citing evidence.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          answerProvenanceV3.statements[0],
+          answerProvenanceV3.statements[1],
+          { ...answerProvenanceV3.statements[2], evidenceIds: ["E1"] },
+        ],
+      }).success,
+    ).toBe(false);
+    // A library statement citing a memory.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          { ...answerProvenanceV3.statements[0], memoryIds: ["K1"] },
+          answerProvenanceV3.statements[1],
+          answerProvenanceV3.statements[2],
+        ],
+      }).success,
+    ).toBe(false);
+    // A memory statement without memory IDs.
+    expect(
+      answerProvenanceV3Schema.safeParse({
+        ...answerProvenanceV3,
+        statements: [
+          answerProvenanceV3.statements[0],
+          answerProvenanceV3.statements[1],
+          { ...answerProvenanceV3.statements[2], memoryIds: [] },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it("parses V2 provenance stored before modelDraft existed and defaults it to null", () => {
@@ -1090,6 +1180,60 @@ describe("thread and document management contracts", () => {
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_NOT_FOUND").success).toBe(true);
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_IMPORT_IN_PROGRESS").success).toBe(true);
     expect(ipcErrorCodeSchema.safeParse("DOCUMENT_EXPLODED").success).toBe(false);
+  });
+
+  it("routes memory requests and accepts memory results on both unions", () => {
+    const requests = [
+      { id: THREAD_ID, method: "memory.listFacts", params: {} },
+      {
+        id: THREAD_ID,
+        method: "memory.updateFact",
+        params: { fact: "Prefers metric units.", factId: FACT_ID },
+      },
+      { id: THREAD_ID, method: "memory.deleteFact", params: { factId: FACT_ID } },
+      { id: THREAD_ID, method: "memory.getStatus", params: {} },
+      {
+        id: THREAD_ID,
+        method: "memory.setThreadExclusion",
+        params: { excluded: true, threadId: THREAD_ID },
+      },
+    ];
+    for (const request of requests) {
+      expect(ipcRequestSchema.safeParse(request).success).toBe(true);
+      expect(
+        engineRequestSchema.safeParse({
+          ...request,
+          method: `engine.${request.method}`,
+        }).success,
+      ).toBe(true);
+    }
+
+    const fact = {
+      category: "preference",
+      createdAt: NOW,
+      fact: "Prefers metric units.",
+      id: FACT_ID,
+      origin: "extracted",
+      sourceThreadId: null,
+      updatedAt: NOW,
+    };
+    const status = {
+      excludedThreadCount: 1,
+      factCount: 1,
+      staleThreadCount: 0,
+      summarizedThreadCount: 4,
+    };
+    expect(userFactSchema.safeParse(fact).success).toBe(true);
+    expect(memoryStatusSchema.safeParse(status).success).toBe(true);
+    for (const schema of [ipcResultSchema, engineResultSchema]) {
+      expect(schema.safeParse([fact]).success).toBe(true);
+      expect(schema.safeParse(status).success).toBe(true);
+      expect(schema.safeParse({ deletedFactId: FACT_ID }).success).toBe(true);
+    }
+    expect(
+      userFactSchema.safeParse({ ...fact, category: "secret" }).success,
+    ).toBe(false);
+    expect(ipcErrorCodeSchema.safeParse("MEMORY_FACT_NOT_FOUND").success).toBe(true);
   });
 });
 

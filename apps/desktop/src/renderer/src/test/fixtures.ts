@@ -34,6 +34,7 @@ export const threadSummary = {
   id: THREAD_ID,
   lastMessageAt: NOW,
   lastMessagePreview: "Keep seeds cool and dry.",
+  memoryExcluded: false,
   messageCount: 2,
   title: "Seed storage",
   updatedAt: NOW,
@@ -284,6 +285,48 @@ export const evidenceFirstAssistantMessage = {
   content: "This serialized V2 content should not be rendered.",
 };
 
+export const MEMORY_THREAD_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+export const memoryThreadSummary = {
+  ...threadSummary,
+  id: MEMORY_THREAD_ID,
+  title: "Seed saving",
+};
+
+export const memoryProvenance = {
+  ...evidenceFirstProvenance,
+  memory: {
+    memories: [
+      {
+        content: "Topics: seed saving | Conclusions: dry seeds fully before storage.",
+        id: "K1",
+        threadDate: "2026-08-10",
+        threadId: MEMORY_THREAD_ID,
+        threadTitle: "Seed saving",
+      },
+    ],
+    stage: { fallbackReason: null, status: "completed" as const },
+  },
+  statements: [
+    { ...evidenceFirstProvenance.statements[0]!, memoryIds: [] },
+    {
+      evidenceIds: [],
+      kind: "memory" as const,
+      memoryIds: ["K1"],
+      statementId: "S2",
+      text: "You previously settled on drying seeds fully before storage.",
+    },
+  ],
+  version: 3 as const,
+};
+
+export const memoryAssistantMessage = {
+  ...assistantMessage,
+  answerProvenance: memoryProvenance,
+  citations: [citation],
+  content: "This serialized V3 content should not be rendered.",
+};
+
 export const offlineRagStatus = {
   embedding: {
     coverage: null,
@@ -525,6 +568,12 @@ export function installKnosysApi(options: InstallApiOptions = {}) {
     preferences: {
       get: vi.fn().mockResolvedValue(options.preferences ?? emptyPreferences),
       set: vi.fn().mockResolvedValue(options.preferences ?? emptyPreferences),
+    },
+    memory: {
+      setThreadExclusion: vi.fn().mockResolvedValue({
+        ...threadSummary,
+        memoryExcluded: true,
+      }),
     },
     models: {
       cancelPull: vi.fn().mockResolvedValue({ cancelled: true, model: "qwen3:8b" }),

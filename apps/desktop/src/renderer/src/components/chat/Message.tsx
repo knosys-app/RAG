@@ -10,6 +10,7 @@ import { contentFade } from "@/lib/motion";
 interface MessageProps {
   readonly message: ChatMessage;
   readonly onInspectEvidence: (citationId: string) => void;
+  readonly onOpenMemoryThread: (threadId: string) => void;
   readonly streamingStatus: ChatProgressStatus | null;
   readonly streamingText: string | null;
 }
@@ -57,6 +58,7 @@ function statusNotice(message: ChatMessage): ReactNode {
 function MessageComponent({
   message,
   onInspectEvidence,
+  onOpenMemoryThread,
   streamingStatus,
   streamingText,
 }: MessageProps): ReactNode {
@@ -108,6 +110,7 @@ function MessageComponent({
       <AnswerContent
         message={message}
         onInspectEvidence={onInspectEvidence}
+        onOpenMemoryThread={onOpenMemoryThread}
         streamingStatus={streamingStatus}
         streamingText={streamingText}
       />

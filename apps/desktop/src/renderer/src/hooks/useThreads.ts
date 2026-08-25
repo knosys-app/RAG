@@ -22,6 +22,10 @@ export interface UseThreads {
   readonly renameFolder: (folderId: string, name: string) => Promise<string | null>;
   readonly select: (threadId: string | null) => void;
   readonly selectedThreadId: string | null;
+  readonly setMemoryExclusion: (
+    threadId: string,
+    excluded: boolean,
+  ) => Promise<string | null>;
   readonly threads: readonly ChatThreadSummary[];
 }
 
@@ -113,6 +117,24 @@ export function useThreads(): UseThreads {
     [],
   );
 
+  const setMemoryExclusion = useCallback(
+    async (threadId: string, excluded: boolean): Promise<string | null> => {
+      try {
+        const summary = await window.knosys.memory.setThreadExclusion(
+          threadId,
+          excluded,
+        );
+        setThreads((current) =>
+          current.map((candidate) => (candidate.id === threadId ? summary : candidate)),
+        );
+        return null;
+      } catch (error) {
+        return describeError(error, "The memory setting could not be changed.");
+      }
+    },
+    [],
+  );
+
   const createFolder = useCallback(async (name: string): Promise<string | null> => {
     try {
       const folder = await window.knosys.chat.createFolder(name);
@@ -167,6 +189,7 @@ export function useThreads(): UseThreads {
     renameFolder,
     select,
     selectedThreadId,
+    setMemoryExclusion,
     threads,
   };
 }

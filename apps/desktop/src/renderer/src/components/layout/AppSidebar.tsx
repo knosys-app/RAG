@@ -61,6 +61,7 @@ interface AppSidebarProps {
   readonly onRenameFolder: (folderId: string, name: string) => Promise<string | null>;
   readonly onRenameThread: (threadId: string, title: string) => Promise<string | null>;
   readonly onSelectThread: (threadId: string) => void;
+  readonly onSetThreadMemoryExclusion: (threadId: string, excluded: boolean) => void;
   readonly onViewChange: (view: AppView) => void;
   readonly selectedThreadId: string | null;
   readonly sourceCount: number;
@@ -83,6 +84,7 @@ export function AppSidebar({
   onRenameFolder,
   onRenameThread,
   onSelectThread,
+  onSetThreadMemoryExclusion,
   onViewChange,
   selectedThreadId,
   sourceCount,
@@ -191,6 +193,9 @@ export function AppSidebar({
         onSelect={() => {
           onSelectThread(thread.id);
         }}
+        onSetMemoryExclusion={(excluded) => {
+          onSetThreadMemoryExclusion(thread.id, excluded);
+        }}
         selected={view === "chat" && thread.id === selectedThreadId}
         thread={thread}
       />
@@ -286,6 +291,7 @@ export function AppSidebar({
               onRename={(name) => onRenameFolder(folder.id, name)}
               onRenameThread={onRenameThread}
               onSelectThread={onSelectThread}
+              onSetThreadMemoryExclusion={onSetThreadMemoryExclusion}
               onToggleCollapsed={() => {
                 toggleCollapsed(folder.id);
               }}

@@ -77,7 +77,47 @@ export interface AnswerProvenanceV2 {
   readonly version: 2;
 }
 
-export type AnswerProvenance = AnswerProvenanceV1 | AnswerProvenanceV2;
+// A recalled cross-conversation memory snapshotted into provenance at answer
+// time, so a memory statement stays explainable after its source thread is
+// renamed or deleted.
+export interface RecalledMemoryProvenance {
+  readonly content: string;
+  readonly id: string;
+  readonly threadDate: string;
+  readonly threadId: string;
+  readonly threadTitle: string;
+}
+
+export interface AnswerProvenanceV3 {
+  readonly generationModel: {
+    readonly digest: string;
+    readonly model: string;
+  };
+  readonly memory: {
+    readonly memories: readonly RecalledMemoryProvenance[];
+    readonly stage: AnswerProvenanceStage;
+  };
+  readonly mode: "labeled-hybrid";
+  readonly promptVersions: {
+    readonly contextualization: string | null;
+    readonly evidenceAnswer: string;
+    readonly groundedDerivation: string;
+    readonly modelDraft: string | null;
+    readonly verification: string;
+  };
+  readonly stages: {
+    readonly generation: AnswerProvenanceStage;
+    readonly library: AnswerProvenanceStage;
+    readonly verification: AnswerProvenanceStage;
+  };
+  readonly statements: readonly EvidenceFirstStatement[];
+  readonly version: 3;
+}
+
+export type AnswerProvenance =
+  | AnswerProvenanceV1
+  | AnswerProvenanceV2
+  | AnswerProvenanceV3;
 
 export interface AnswerContextLimits {
   readonly maxCharacters: number;

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import * as sqliteVec from "sqlite-vec";
 import {
   DEFAULT_EMBEDDING_PROFILE,
   InferenceError,
+  MEMORY_SUMMARY_PROMPT_VERSION,
   UNCONFIGURED_GENERATION_PROFILE,
   type AnswerStreamRequest,
   type ClaimReconciliationRequest,
@@ -27,6 +28,8 @@ import {
   type ModelPullProgress,
   type QuestionContextualizationRequest,
   type SynthesisVerificationRequest,
+  type ThreadSummaryRequest,
+  type ThreadSummaryResult,
 } from "@knosys-rag/inference";
 import { KnosysDatabase } from "@knosys-rag/storage-sqlite";
 
@@ -115,6 +118,9 @@ class FakeInferenceProvider implements RagInferenceProvider {
   public readonly verificationRequests: SynthesisVerificationRequest[] = [];
   public contextualizedQuestion: string | null = null;
   public closedBookGate: Promise<void> | null = null;
+  public readonly threadSummaryRequests: ThreadSummaryRequest[] = [];
+  public threadSummaryResult: ThreadSummaryResult | null = null;
+  public failThreadSummary = false;
   public failDocumentEmbedding = false;
   public failModelListing = false;
   public failQueryEmbedding = false;
@@ -129,6 +135,7 @@ class FakeInferenceProvider implements RagInferenceProvider {
   public failPull = false;
   public pullBlocksAfterFirstFrame = false;
   public readonly pullRequests: string[] = [];
+  public includeMemoryKnowledge = false;
   public includeModelKnowledge = false;
   public reconciliationBlocks = false;
   public reconciliationKind: "supported" | "contradicted" | "mixed" | "unverified" =
@@ -264,13 +271,25 @@ class FakeInferenceProvider implements RagInferenceProvider {
       : [{
           evidenceIds: [request.evidence[0]!.id],
           kind: "library" as const,
+          memoryIds: [],
           statementId: "S1" as const,
           text: "Keep tomato leaves dry.",
         }];
+    const memory = request.memories?.[0];
+    if (this.includeMemoryKnowledge && memory !== undefined) {
+      statements.push({
+        evidenceIds: [],
+        kind: "memory",
+        memoryIds: [memory.id],
+        statementId: `S${statements.length + 1}` as `S${number}`,
+        text: "You settled on drip irrigation for the balcony tomatoes.",
+      });
+    }
     if (request.evidence.length === 0 || this.includeModelKnowledge) {
       statements.push({
         evidenceIds: [],
         kind: "model",
+        memoryIds: [],
         statementId: `S${statements.length + 1}` as `S${number}`,
         text: "Keep tomato leaves dry.",
       });
@@ -289,6 +308,7 @@ class FakeInferenceProvider implements RagInferenceProvider {
         statement: {
           evidenceIds: [request.evidence[0]!.id],
           kind: "library" as const,
+          memoryIds: [],
           statementId: "S1" as const,
           text: "Keep tomato leaves dry.",
         },
@@ -348,6 +368,25 @@ class FakeInferenceProvider implements RagInferenceProvider {
       claims: [{ text: "Keep tomato leaves dry." }],
       version: 1 as const,
     };
+  }
+
+  public async summarizeThread(
+    request: ThreadSummaryRequest,
+    options?: InferenceRequestOptions,
+  ): Promise<ThreadSummaryResult> {
+    options?.signal?.throwIfAborted();
+    this.threadSummaryRequests.push(request);
+    this.operationLog.push("memory-summary");
+    if (this.failThreadSummary) throw new Error("Thread summarization failed.");
+    return (
+      this.threadSummaryResult ?? {
+        conclusions: ["Tomato leaves should stay dry."],
+        keyQuestions: [request.messages[0]?.content ?? "What was asked?"],
+        topics: ["tomato care"],
+        userFacts: [],
+        version: 1 as const,
+      }
+    );
   }
 
   public async reconcileClaims(
@@ -1107,7 +1146,7 @@ describe("production RAG orchestration", () => {
     engine.close();
   });
 
-  it("defaults to retrieval-first verified hybrid and persists V2 provenance", async () => {
+  it("defaults to retrieval-first verified hybrid and persists V3 provenance", async () => {
     const root = await mkdtemp(join(tmpdir(), "knosys-rag-hybrid-default-"));
     const dataRoot = join(root, "app-data");
     const source = join(root, "tomatoes.txt");
@@ -1179,7 +1218,7 @@ describe("production RAG orchestration", () => {
             text: "Keep tomato leaves dry.",
           },
         ],
-        version: 2,
+        version: 3,
       },
       citations: [{ evidenceId: "E1" }],
       content: "Keep tomato leaves dry.",
@@ -1199,7 +1238,7 @@ describe("production RAG orchestration", () => {
     });
     expect(reopened.getChatThread(threadId).messages.at(-1)?.answerProvenance).toMatchObject({
       mode: "labeled-hybrid",
-      version: 2,
+      version: 3,
     });
     reopened.close();
   });
@@ -1229,7 +1268,7 @@ describe("production RAG orchestration", () => {
             statementId: "S1",
           },
         ],
-        version: 2,
+        version: 3,
       },
       citations: [],
       content: "Keep tomato leaves dry.",
@@ -1281,7 +1320,7 @@ describe("production RAG orchestration", () => {
       answerProvenance: {
         stages: { verification: { status: "failed" } },
         statements: [{ evidenceIds: [], kind: "model", statementId: "S1" }],
-        version: 2,
+        version: 3,
       },
       citations: [],
       status: "completed",
@@ -1320,12 +1359,13 @@ describe("production RAG orchestration", () => {
       expect(completed.message.content).toBe("Keep tomato leaves dry.");
       expect(completed.message.citations).toHaveLength(1);
       const provenance = completed.message.answerProvenance;
-      if (provenance?.version !== 2) throw new Error("Expected V2 provenance.");
+      if (provenance?.version !== 3) throw new Error("Expected V3 provenance.");
       expect(provenance.stages[failedStage].status).toBe("failed");
       expect(provenance.statements).toEqual([
         {
           evidenceIds: ["E1"],
           kind: "library",
+          memoryIds: [],
           statementId: "S1",
           text: "Keep tomato leaves dry.",
         },
@@ -1805,5 +1845,354 @@ describe("production RAG orchestration", () => {
     });
     check.close();
     recovered.close();
+  });
+});
+
+describe("conversation memory maintenance", () => {
+  async function seedChatEngine(prefix: string) {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    const source = join(root, "tomatoes.txt");
+    await writeFile(source, "Keep tomato leaves dry when watering.", "utf8");
+    const provider = new FakeInferenceProvider();
+    const engine = new KnowledgeEngine(join(root, "app-data"), vectorExtensionPath, {
+      inferenceProvider: provider,
+    });
+    await engine.importPaths([source]);
+    await engine.initializeRag();
+    await waitForBackfill(engine);
+    const database = new KnosysDatabase(
+      join(root, "app-data", "state", "knosys-rag.sqlite"),
+      vectorExtensionPath,
+    );
+    return { database, engine, provider, root };
+  }
+
+  it("summarizes finished threads into retrievable, embedded memories with user facts", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry when watering."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "project", fact: "Grows tomatoes on a balcony." }],
+      version: 1,
+    };
+
+    const { events } = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+
+    await vi.waitFor(
+      () => {
+        expect(database.searchMemoryLexical("tomato watering")).toMatchObject([
+          { threadId },
+        ]);
+        expect(database.listUserFacts()).toMatchObject([
+          { fact: "Grows tomatoes on a balcony.", origin: "extracted", sourceThreadId: threadId },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    const request = provider.threadSummaryRequests[0];
+    expect(request).toMatchObject({ knownFacts: [], priorSummary: null });
+    expect(request?.messages).toMatchObject([
+      { content: "How should tomato plants be watered?", role: "user" },
+      { role: "assistant" },
+    ]);
+    const memory = database.getThreadMemory(threadId);
+    expect(memory).toMatchObject({
+      promptVersion: MEMORY_SUMMARY_PROMPT_VERSION,
+      summarizedMessageCount: 2,
+      topics: ["tomato watering"],
+    });
+    expect(memory?.summaryText).toContain("Topics: tomato watering");
+    expect(memory?.summaryText).toContain("Tomato leaves should stay dry");
+
+    // The summary is embedded by the same maintenance pass.
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+        expect(database.searchMemoryVectors(profileId, unitVector(1), 5)).toMatchObject([
+          { threadId },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("recalls other-thread memories and user facts into question contextualization", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-recall-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry when watering."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "project", fact: "Grows tomatoes on a balcony." }],
+      version: 1,
+    };
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const firstCompleted = first.events.find((event) => event.kind === "completed");
+    if (firstCompleted?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const memoryThreadId = firstCompleted.message.threadId;
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(memoryThreadId)).not.toBeNull();
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    // A brand-new thread has no history; recall alone must trigger
+    // memory-aware contextualization.
+    const second = await terminalEvent(engine, "What did we figure out about tomatoes?");
+    const secondCompleted = second.events.find((event) => event.kind === "completed");
+    expect(secondCompleted?.kind).toBe("completed");
+    const request = provider.contextualizationRequests.at(-1);
+    expect(request).toMatchObject({
+      history: [],
+      question: "What did we figure out about tomatoes?",
+      userFacts: ["Grows tomatoes on a balcony."],
+    });
+    expect(request?.memories).toMatchObject([
+      {
+        id: "K1",
+        threadTitle: "How should tomato plants be watered?",
+      },
+    ]);
+    expect(request?.memories?.[0]?.content).toContain("tomato watering");
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("labels recalled memories as cited memory statements in V3 provenance", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-cite-");
+    provider.threadSummaryResult = {
+      conclusions: ["Drip irrigation suits balcony tomatoes."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [],
+      version: 1,
+    };
+    const first = await terminalEvent(
+      engine,
+      "How should tomato plants be watered?",
+      undefined,
+      null,
+    );
+    const firstCompleted = first.events.find((event) => event.kind === "completed");
+    if (firstCompleted?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const memoryThreadId = firstCompleted.message.threadId;
+    const profileId = database.getSelectedModelSettings().embeddingProfileId;
+    if (profileId === null) throw new Error("Expected an embedding profile.");
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(memoryThreadId)).not.toBeNull();
+        expect(database.listMemoriesNeedingEmbedding(profileId)).toEqual([]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    provider.includeMemoryKnowledge = true;
+    const second = await terminalEvent(
+      engine,
+      "What did we figure out about tomatoes?",
+      undefined,
+      null,
+    );
+    const completed = second.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+
+    // The evidence-first generation and verification both received the
+    // recalled memory.
+    expect(provider.evidenceFirstAnswerRequests.at(-1)?.memories).toMatchObject([
+      { id: "K1", threadTitle: "How should tomato plants be watered?" },
+    ]);
+    expect(provider.evidenceFirstVerificationRequests.at(-1)?.memories).toMatchObject([
+      { id: "K1" },
+    ]);
+
+    const provenance = completed.message.answerProvenance;
+    if (provenance?.version !== 3) throw new Error("Expected V3 provenance.");
+    expect(provenance.memory).toMatchObject({
+      memories: [
+        {
+          id: "K1",
+          threadId: memoryThreadId,
+          threadTitle: "How should tomato plants be watered?",
+        },
+      ],
+      stage: { status: "completed" },
+    });
+    const memoryStatement = provenance.statements.find(({ kind }) => kind === "memory");
+    expect(memoryStatement).toMatchObject({ evidenceIds: [], memoryIds: ["K1"] });
+    expect(completed.message.content).toContain(
+      "You settled on drip irrigation for the balcony tomatoes.",
+    );
+    // Memory statements never become library citations.
+    const citedEvidenceIds = completed.message.citations.map(
+      ({ evidenceId }) => evidenceId,
+    );
+    expect(citedEvidenceIds).not.toContain("K1");
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("scrubs excluded threads from recall and re-summarizes on re-inclusion", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-exclude-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [],
+      version: 1,
+    };
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = first.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).not.toBeNull();
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    const excluded = engine.setThreadMemoryExclusion(threadId, true);
+    expect(excluded.memoryExcluded).toBe(true);
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(
+      engine.listChatThreads().find((thread) => thread.id === threadId)?.memoryExcluded,
+    ).toBe(true);
+
+    // With the only memory scrubbed and no user facts, a new thread gets no
+    // contextualization at all.
+    const before = provider.contextualizationRequests.length;
+    await terminalEvent(engine, "What did we figure out about tomatoes?");
+    expect(provider.contextualizationRequests.length).toBe(before);
+
+    const included = engine.setThreadMemoryExclusion(threadId, false);
+    expect(included.memoryExcluded).toBe(false);
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).not.toBeNull();
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(() => engine.setThreadMemoryExclusion(randomUUID(), true)).toThrow(
+      /does not exist/,
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("manages user facts end to end and reports memory status", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-facts-");
+    provider.threadSummaryResult = {
+      conclusions: ["Tomato leaves should stay dry."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "preference", fact: "Prefers drip irrigation." }],
+      version: 1,
+    };
+    await terminalEvent(engine, "How should tomato plants be watered?");
+    await vi.waitFor(
+      () => {
+        expect(engine.listUserFacts()).toMatchObject([
+          { fact: "Prefers drip irrigation.", origin: "extracted" },
+        ]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(engine.getMemoryStatus()).toMatchObject({
+      excludedThreadCount: 0,
+      factCount: 1,
+      summarizedThreadCount: 1,
+    });
+
+    const fact = engine.listUserFacts()[0]!;
+    const updated = engine.updateUserFact(fact.id, "Prefers soaker hoses.");
+    expect(updated).toMatchObject({ fact: "Prefers soaker hoses.", origin: "user" });
+
+    expect(engine.deleteUserFact(fact.id)).toEqual({ deletedFactId: fact.id });
+    expect(engine.listUserFacts()).toEqual([]);
+    expect(engine.getMemoryStatus().factCount).toBe(0);
+    expect(() => engine.deleteUserFact(fact.id)).toThrow(/does not exist/);
+    expect(() => engine.updateUserFact(randomUUID(), "Whatever")).toThrow(
+      /does not exist/,
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
+  });
+
+  it("leaves failed summaries stale, then retries with the prior summary and known facts", async () => {
+    const { database, engine, provider, root } = await seedChatEngine("knosys-memory-retry-");
+    provider.failThreadSummary = true;
+
+    const first = await terminalEvent(engine, "How should tomato plants be watered?");
+    const completed = first.events.find((event) => event.kind === "completed");
+    if (completed?.kind !== "completed") throw new Error("Expected a completed chat.");
+    const threadId = completed.message.threadId;
+
+    await vi.waitFor(
+      () => {
+        expect(provider.threadSummaryRequests.length).toBeGreaterThan(0);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+    expect(database.getThreadMemory(threadId)).toBeNull();
+    expect(
+      database
+        .listThreadsNeedingMemorySummary(MEMORY_SUMMARY_PROMPT_VERSION)
+        .map((item) => item.threadId),
+    ).toEqual([threadId]);
+
+    // The next completed run retries; its summary then feeds the one after.
+    provider.failThreadSummary = false;
+    provider.threadSummaryResult = {
+      conclusions: ["Water at the base of the plant."],
+      keyQuestions: ["How should tomato plants be watered?"],
+      topics: ["tomato watering"],
+      userFacts: [{ category: "preference", fact: "Prefers drip irrigation." }],
+      version: 1,
+    };
+    await terminalEvent(engine, "And how often should I water?", threadId);
+    await vi.waitFor(
+      () => {
+        expect(database.getThreadMemory(threadId)).toMatchObject({
+          summarizedMessageCount: 4,
+        });
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    await terminalEvent(engine, "What about fertilizer?", threadId);
+    await vi.waitFor(
+      () => {
+        const request = provider.threadSummaryRequests.at(-1);
+        expect(request?.priorSummary).toMatchObject({ topics: ["tomato watering"] });
+        expect(request?.knownFacts).toEqual(["Prefers drip irrigation."]);
+      },
+      { interval: 10, timeout: 5_000 },
+    );
+
+    engine.close();
+    database.close();
+    await rm(root, { recursive: true });
   });
 });

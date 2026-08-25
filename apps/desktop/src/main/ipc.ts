@@ -290,6 +290,42 @@ export function registerIpcHandlers(engine: EngineClient): void {
                 parsed.data.params.title,
               ),
             });
+          case "memory.setThreadExclusion":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.setThreadMemoryExclusion(
+                parsed.data.params.threadId,
+                parsed.data.params.excluded,
+              ),
+            });
+          case "memory.listFacts":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.listUserFacts(),
+            });
+          case "memory.updateFact":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.updateUserFact(
+                parsed.data.params.factId,
+                parsed.data.params.fact,
+              ),
+            });
+          case "memory.deleteFact":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.deleteUserFact(parsed.data.params.factId),
+            });
+          case "memory.getStatus":
+            return ipcResponseSchema.parse({
+              id: parsed.data.id,
+              ok: true,
+              result: await engine.getMemoryStatus(),
+            });
           case "chat.listFolders":
             return ipcResponseSchema.parse({
               id: parsed.data.id,

@@ -22,6 +22,9 @@ import {
   evidenceFirstProvenance,
   hybridAssistantMessage,
   installKnosysApi,
+  MEMORY_THREAD_ID,
+  memoryAssistantMessage,
+  memoryThreadSummary,
   offlineRagStatus,
   FOLDER_ID,
   folderSummary,
@@ -382,6 +385,28 @@ describe("chat", () => {
     await screen.findByText("General model background.");
     expect(screen.getByText("Includes model knowledge")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Evidence used/ })).toBeNull();
+  });
+
+  it("renders V3 memory statements with a chip that opens the source thread", async () => {
+    const { api } = installKnosysApi({
+      thread: {
+        ...threadSummary,
+        messages: [userMessage, memoryAssistantMessage],
+      },
+      threads: [threadSummary, memoryThreadSummary],
+    });
+
+    renderApp();
+    await screen.findByText("You previously settled on drying seeds fully before storage.");
+    expect(screen.getByText("Memory used")).toBeTruthy();
+
+    const chip = screen.getByRole("button", {
+      name: "From a past chat: Seed saving, 2026-08-10",
+    });
+    fireEvent.click(chip);
+    await waitFor(() => {
+      expect(api.chat.getThread).toHaveBeenCalledWith(MEMORY_THREAD_ID);
+    });
   });
 
   it("keeps history and exact evidence readable while generation is offline", async () => {

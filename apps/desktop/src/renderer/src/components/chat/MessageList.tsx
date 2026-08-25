@@ -13,6 +13,7 @@ interface MessageListProps {
   readonly emptyState: ReactNode;
   readonly messages: readonly ChatMessage[];
   readonly onInspectEvidence: (citationId: string) => void;
+  readonly onOpenMemoryThread: (threadId: string) => void;
   readonly threadLoading: boolean;
 }
 
@@ -21,6 +22,7 @@ export function MessageList({
   emptyState,
   messages,
   onInspectEvidence,
+  onOpenMemoryThread,
   threadLoading,
 }: MessageListProps): ReactNode {
   const { containerRef, onScroll, pinned, scrollToBottom, scrollToBottomIfPinned } =
@@ -65,6 +67,7 @@ export function MessageList({
                 key={message.id}
                 message={message}
                 onInspectEvidence={onInspectEvidence}
+                onOpenMemoryThread={onOpenMemoryThread}
                 streamingStatus={isStreaming ? activeRun.status : null}
                 streamingText={isStreaming ? activeRun.text : null}
               />

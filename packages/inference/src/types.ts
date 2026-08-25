@@ -44,9 +44,20 @@ export interface ConversationMessage {
   readonly role: "assistant" | "user";
 }
 
+// A compact, dated summary of one of the user's other conversations, recalled
+// because it may be relevant to the current question.
+export interface RecalledMemory {
+  readonly content: string;
+  readonly id: string;
+  readonly threadDate: string;
+  readonly threadTitle: string;
+}
+
 export interface QuestionContextualizationRequest {
   readonly history: readonly ConversationMessage[];
+  readonly memories?: readonly RecalledMemory[];
   readonly question: string;
+  readonly userFacts?: readonly string[];
 }
 
 export interface GroundingEvidence {
@@ -125,7 +136,10 @@ export interface ReconciliationEvidence {
 
 export interface EvidenceFirstStatement {
   readonly evidenceIds: readonly HybridEvidenceId[];
-  readonly kind: "library" | "model";
+  readonly kind: "library" | "memory" | "model";
+  // K-prefixed IDs of the recalled conversation memories backing a memory
+  // statement; empty for library and model statements.
+  readonly memoryIds: readonly string[];
   readonly statementId: HybridStatementId;
   readonly text: string;
 }
@@ -133,6 +147,9 @@ export interface EvidenceFirstStatement {
 export interface EvidenceFirstAnswerRequest {
   readonly evidence: readonly ReconciliationEvidence[];
   readonly libraryAnswer: string;
+  // Recalled cross-conversation memories; facts sourced from them come back
+  // as labeled memory statements citing the memory IDs.
+  readonly memories?: readonly RecalledMemory[];
   // The model's own closed-book answer, synthesized in as labeled model
   // statements for anything the library evidence does not cover. Optional so
   // callers that only want grounded output can omit it.
@@ -163,6 +180,7 @@ export interface EvidenceFirstVerificationAssessment {
 
 export interface EvidenceFirstVerificationRequest {
   readonly evidence: readonly ReconciliationEvidence[];
+  readonly memories?: readonly RecalledMemory[];
   readonly originalQuestion: string;
   readonly resolvedQuestion: string;
   readonly statements: readonly EvidenceFirstStatement[];
@@ -236,6 +254,32 @@ export interface SynthesisVerificationRequest {
   readonly statements: readonly HybridSynthesisStatement[];
 }
 
+export type UserFactCategory = "preference" | "profile" | "project" | "other";
+
+export interface ThreadSummaryFactCandidate {
+  readonly category: UserFactCategory;
+  readonly fact: string;
+}
+
+export interface ThreadSummaryResult {
+  readonly conclusions: readonly string[];
+  readonly keyQuestions: readonly string[];
+  readonly topics: readonly string[];
+  readonly userFacts: readonly ThreadSummaryFactCandidate[];
+  readonly version: 1;
+}
+
+export interface ThreadSummaryRequest {
+  // Active user facts already stored; the model must return only facts absent
+  // from this list.
+  readonly knownFacts: readonly string[];
+  readonly messages: readonly ConversationMessage[];
+  // The previous summary of this thread, covering turns that may no longer be
+  // in messages; the new summary merges it with the recent turns.
+  readonly priorSummary: ThreadSummaryResult | null;
+  readonly threadTitle: string;
+}
+
 export interface EmbeddingProvider {
   readonly embeddingProfile: EmbeddingModelProfile;
   embedDocuments(
@@ -286,6 +330,14 @@ export interface ClosedBookAnswerProvider {
     request: ClosedBookAnswerRequest,
     options?: InferenceRequestOptions,
   ): Promise<ClosedBookAnswerResult>;
+}
+
+export interface ThreadSummaryProvider {
+  readonly generationProfile: GenerationModelProfile;
+  summarizeThread(
+    request: ThreadSummaryRequest,
+    options?: InferenceRequestOptions,
+  ): Promise<ThreadSummaryResult>;
 }
 
 export interface ClaimReconciliationProvider {

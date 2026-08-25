@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuRadioGroup,
@@ -24,6 +25,7 @@ interface ThreadListItemProps {
   readonly onMove: (folderId: string | null) => void;
   readonly onRename: (title: string) => Promise<string | null>;
   readonly onSelect: () => void;
+  readonly onSetMemoryExclusion: (excluded: boolean) => void;
   readonly selected: boolean;
   readonly thread: ChatThreadSummary;
 }
@@ -35,6 +37,7 @@ export function ThreadListItem({
   onMove,
   onRename,
   onSelect,
+  onSetMemoryExclusion,
   selected,
   thread,
 }: ThreadListItemProps): ReactNode {
@@ -149,6 +152,14 @@ export function ThreadListItem({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           ) : null}
+          <DropdownMenuCheckboxItem
+            checked={thread.memoryExcluded}
+            onCheckedChange={(checked) => {
+              onSetMemoryExclusion(checked === true);
+            }}
+          >
+            Exclude from memory
+          </DropdownMenuCheckboxItem>
           <DropdownMenuItem onSelect={onDelete} variant="destructive">
             <Trash2 size={14} /> Delete
           </DropdownMenuItem>

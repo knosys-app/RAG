@@ -20,6 +20,8 @@ import {
   KnosysApiError,
   libraryDeleteDocumentResultSchema,
   librarySnapshotSchema,
+  memoryDeleteFactResultSchema,
+  memoryStatusSchema,
   modelPullEventSchema,
   modelsCancelPullResultSchema,
   modelsPullResultSchema,
@@ -27,6 +29,8 @@ import {
   searchResultSchema,
   sourceBlockWindowSchema,
   systemStatusSchema,
+  userFactListSchema,
+  userFactSchema,
   type KnosysDesktopApi,
 } from "@knosys-rag/contracts";
 import { contextBridge, ipcRenderer } from "electron";
@@ -55,6 +59,11 @@ async function invoke<TSchema extends z.ZodType>(
     | "library.replaceDocument"
     | "library.reprocessDocument"
     | "library.search"
+    | "memory.deleteFact"
+    | "memory.getStatus"
+    | "memory.listFacts"
+    | "memory.setThreadExclusion"
+    | "memory.updateFact"
     | "models.cancelPull"
     | "models.pull"
     | "preferences.get"
@@ -142,6 +151,20 @@ const api: KnosysDesktopApi = {
     },
     search: (query) =>
       invoke("library.search", { query }, searchResultSchema.array()),
+  },
+  memory: {
+    deleteFact: (factId) =>
+      invoke("memory.deleteFact", { factId }, memoryDeleteFactResultSchema),
+    getStatus: () => invoke("memory.getStatus", {}, memoryStatusSchema),
+    listFacts: () => invoke("memory.listFacts", {}, userFactListSchema),
+    setThreadExclusion: (threadId, excluded) =>
+      invoke(
+        "memory.setThreadExclusion",
+        { excluded, threadId },
+        chatThreadSummarySchema,
+      ),
+    updateFact: (factId, fact) =>
+      invoke("memory.updateFact", { fact, factId }, userFactSchema),
   },
   models: {
     cancelPull: (model) =>

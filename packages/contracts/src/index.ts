@@ -939,9 +939,112 @@ export const answerProvenanceV2Schema = z
     });
   });
 
+const memoryRecallIdSchema = z.string().regex(/^K[1-9]\d*$/).max(32);
+
+const answerProvenanceV3StatementSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).min(1).max(128).refine(uniqueIds),
+      kind: z.literal("library"),
+      memoryIds: z.array(memoryRecallIdSchema).length(0),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).length(0),
+      kind: z.literal("memory"),
+      memoryIds: z.array(memoryRecallIdSchema).min(1).max(8).refine(uniqueIds),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+  z
+    .object({
+      evidenceIds: z.array(hybridEvidenceIdSchema).length(0),
+      kind: z.literal("model"),
+      memoryIds: z.array(memoryRecallIdSchema).length(0),
+      statementId: hybridStatementIdSchema,
+      text: boundedClaimTextSchema,
+    })
+    .strict(),
+]);
+
+// A recalled conversation memory snapshotted at answer time. threadId is a
+// soft link: the source thread may be renamed or deleted later, so title,
+// date, and content are preserved here.
+export const recalledMemoryProvenanceSchema = z
+  .object({
+    content: z.string().min(1).max(4_000),
+    id: memoryRecallIdSchema,
+    threadDate: z.string().min(1).max(64),
+    threadId: z.uuid(),
+    threadTitle: z.string().min(1).max(512),
+  })
+  .strict();
+
+export const answerProvenanceV3Schema = z
+  .object({
+    generationModel: provenanceGenerationModelSchema,
+    memory: z
+      .object({
+        memories: z
+          .array(recalledMemoryProvenanceSchema)
+          .max(8)
+          .refine((memories) => uniqueIds(memories.map(({ id }) => id)), {
+            message: "Recalled memory IDs must be unique",
+          }),
+        stage: provenanceStageSchema,
+      })
+      .strict(),
+    mode: z.literal("labeled-hybrid"),
+    promptVersions: z
+      .object({
+        contextualization: boundedIdentifierSchema.nullable(),
+        evidenceAnswer: boundedIdentifierSchema,
+        groundedDerivation: boundedIdentifierSchema,
+        modelDraft: boundedIdentifierSchema.nullable(),
+        verification: boundedIdentifierSchema,
+      })
+      .strict(),
+    stages: z
+      .object({
+        generation: provenanceStageSchema,
+        library: provenanceStageSchema,
+        verification: provenanceStageSchema,
+      })
+      .strict(),
+    statements: z.array(answerProvenanceV3StatementSchema).max(144),
+    version: z.literal(3),
+  })
+  .strict()
+  .superRefine((provenance, context) => {
+    const recalledIds = new Set(provenance.memory.memories.map(({ id }) => id));
+    provenance.statements.forEach((statement, index) => {
+      if (statement.statementId !== `S${index + 1}`) {
+        context.addIssue({
+          code: "custom",
+          message: "Statement IDs must be unique and consecutive in array order.",
+          path: ["statements", index, "statementId"],
+        });
+      }
+      statement.memoryIds.forEach((memoryId, memoryIndex) => {
+        if (!recalledIds.has(memoryId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Every referenced memory must be recorded in memory.memories.",
+            path: ["statements", index, "memoryIds", memoryIndex],
+          });
+        }
+      });
+    });
+  });
+
 export const answerProvenanceSchema = z.discriminatedUnion("version", [
   answerProvenanceV1Schema,
   answerProvenanceV2Schema,
+  answerProvenanceV3Schema,
 ]);
 
 export const chatMessageSchema = z
@@ -1018,6 +1121,7 @@ export const chatThreadSummarySchema = z
     id: z.uuid(),
     lastMessageAt: z.iso.datetime().nullable(),
     lastMessagePreview: z.string().max(512).nullable(),
+    memoryExcluded: z.boolean(),
     messageCount: boundedNonnegativeIntegerSchema,
     title: z.string().min(1).max(512),
     updatedAt: z.iso.datetime(),
@@ -1051,6 +1155,38 @@ export const chatThreadSchema = chatThreadSummarySchema
   });
 
 export const chatThreadListSchema = z.array(chatThreadSummarySchema).max(100);
+
+export const userFactCategorySchema = z.enum([
+  "preference",
+  "profile",
+  "project",
+  "other",
+]);
+
+// A durable fact about the user, extracted from conversations or edited by
+// hand, always available to memory-aware prompts and manageable in Settings.
+export const userFactSchema = z
+  .object({
+    category: userFactCategorySchema,
+    createdAt: z.iso.datetime(),
+    fact: z.string().min(1).max(512),
+    id: z.uuid(),
+    origin: z.enum(["extracted", "user"]),
+    sourceThreadId: z.uuid().nullable(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict();
+
+export const userFactListSchema = z.array(userFactSchema).max(64);
+
+export const memoryStatusSchema = z
+  .object({
+    excludedThreadCount: boundedNonnegativeIntegerSchema,
+    factCount: boundedNonnegativeIntegerSchema,
+    staleThreadCount: boundedNonnegativeIntegerSchema,
+    summarizedThreadCount: boundedNonnegativeIntegerSchema,
+  })
+  .strict();
 
 export const sourceBlockSchema = z
   .object({
@@ -1305,6 +1441,13 @@ export const chatDeleteFolderResultSchema = z
   })
   .strict();
 export const chatMoveThreadResultSchema = chatThreadSummarySchema;
+export const memorySetThreadExclusionResultSchema = chatThreadSummarySchema;
+export const memoryListFactsResultSchema = userFactListSchema;
+export const memoryUpdateFactResultSchema = userFactSchema;
+export const memoryDeleteFactResultSchema = z
+  .object({ deletedFactId: z.uuid() })
+  .strict();
+export const memoryGetStatusResultSchema = memoryStatusSchema;
 export const libraryDeleteDocumentResultSchema = z
   .object({
     deletedDocumentId: z.uuid(),
@@ -1543,6 +1686,60 @@ export const chatRenameThreadRequestSchema = z
   })
   .strict();
 
+export const memoryListFactsRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.listFacts"),
+    params: z.object({}).strict(),
+  })
+  .strict();
+
+export const memoryUpdateFactRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.updateFact"),
+    params: z
+      .object({
+        fact: z.string().trim().min(1).max(512),
+        factId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const memoryDeleteFactRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.deleteFact"),
+    params: z
+      .object({
+        factId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const memoryGetStatusRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.getStatus"),
+    params: z.object({}).strict(),
+  })
+  .strict();
+
+export const memorySetThreadExclusionRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("memory.setThreadExclusion"),
+    params: z
+      .object({
+        excluded: z.boolean(),
+        threadId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const chatListFoldersRequestSchema = z
   .object({
     id: z.uuid(),
@@ -1672,6 +1869,11 @@ export const ipcRequestSchema = z.discriminatedUnion("method", [
   chatCancelRequestSchema,
   chatDeleteThreadRequestSchema,
   chatRenameThreadRequestSchema,
+  memorySetThreadExclusionRequestSchema,
+  memoryListFactsRequestSchema,
+  memoryUpdateFactRequestSchema,
+  memoryDeleteFactRequestSchema,
+  memoryGetStatusRequestSchema,
   chatListFoldersRequestSchema,
   chatCreateFolderRequestSchema,
   chatRenameFolderRequestSchema,
@@ -1695,6 +1897,7 @@ export const ipcErrorCodeSchema = z.enum([
   "RAG_GENERATION_MODEL_NOT_INSTALLED",
   "RAG_GENERATION_MODEL_NOT_CAPABLE",
   "CHAT_THREAD_NOT_FOUND",
+  "MEMORY_FACT_NOT_FOUND",
   "CHAT_FOLDER_NOT_FOUND",
   "CHAT_RUN_NOT_FOUND",
   "CHAT_RUN_NOT_ACTIVE",
@@ -1743,6 +1946,10 @@ export const ipcResultSchema = z.union([
   chatListFoldersResultSchema,
   chatCreateFolderResultSchema,
   chatDeleteFolderResultSchema,
+  memoryListFactsResultSchema,
+  memoryUpdateFactResultSchema,
+  memoryDeleteFactResultSchema,
+  memoryGetStatusResultSchema,
   modelsPullResultSchema,
   modelsCancelPullResultSchema,
   evidenceGetResultSchema,
@@ -1892,6 +2099,60 @@ export const engineChatRenameThreadRequestSchema = z
         title: chatThreadTitleSchema,
       })
       .strict(),
+  })
+  .strict();
+
+export const engineMemorySetThreadExclusionRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.setThreadExclusion"),
+    params: z
+      .object({
+        excluded: z.boolean(),
+        threadId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineMemoryListFactsRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.listFacts"),
+    params: z.object({}).strict(),
+  })
+  .strict();
+
+export const engineMemoryUpdateFactRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.updateFact"),
+    params: z
+      .object({
+        fact: z.string().trim().min(1).max(512),
+        factId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineMemoryDeleteFactRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.deleteFact"),
+    params: z
+      .object({
+        factId: z.uuid(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const engineMemoryGetStatusRequestSchema = z
+  .object({
+    id: z.uuid(),
+    method: z.literal("engine.memory.getStatus"),
+    params: z.object({}).strict(),
   })
   .strict();
 
@@ -2083,6 +2344,11 @@ export const engineRequestSchema = z.discriminatedUnion("method", [
   engineChatCancelRequestSchema,
   engineChatDeleteThreadRequestSchema,
   engineChatRenameThreadRequestSchema,
+  engineMemorySetThreadExclusionRequestSchema,
+  engineMemoryListFactsRequestSchema,
+  engineMemoryUpdateFactRequestSchema,
+  engineMemoryDeleteFactRequestSchema,
+  engineMemoryGetStatusRequestSchema,
   engineChatListFoldersRequestSchema,
   engineChatCreateFolderRequestSchema,
   engineChatRenameFolderRequestSchema,
@@ -2112,6 +2378,10 @@ export const engineResultSchema = z.union([
   chatListFoldersResultSchema,
   chatCreateFolderResultSchema,
   chatDeleteFolderResultSchema,
+  memoryListFactsResultSchema,
+  memoryUpdateFactResultSchema,
+  memoryDeleteFactResultSchema,
+  memoryGetStatusResultSchema,
   modelsPullResultSchema,
   modelsCancelPullResultSchema,
   evidenceGetResultSchema,
@@ -2168,6 +2438,16 @@ export type ChatMessageRole = z.infer<typeof chatMessageRoleSchema>;
 export type ChatMessageStatus = z.infer<typeof chatMessageStatusSchema>;
 export type ChatRenameThreadRequest = z.infer<typeof chatRenameThreadRequestSchema>;
 export type ChatRenameThreadResult = z.infer<typeof chatRenameThreadResultSchema>;
+export type MemorySetThreadExclusionRequest = z.infer<
+  typeof memorySetThreadExclusionRequestSchema
+>;
+export type MemorySetThreadExclusionResult = z.infer<
+  typeof memorySetThreadExclusionResultSchema
+>;
+export type UserFact = z.infer<typeof userFactSchema>;
+export type UserFactCategory = z.infer<typeof userFactCategorySchema>;
+export type MemoryStatus = z.infer<typeof memoryStatusSchema>;
+export type MemoryDeleteFactResult = z.infer<typeof memoryDeleteFactResultSchema>;
 export type ChatRoutingEvent = z.infer<typeof chatRoutingEventSchema>;
 export type AnswerRoutingDiagnostics = z.infer<typeof answerRoutingDiagnosticsSchema>;
 export type ChatSendRequest = z.infer<typeof chatSendRequestSchema>;
@@ -2313,6 +2593,13 @@ export interface KnosysDesktopApi {
     replaceDocument(documentId: string): Promise<ImportSelectionResult>;
     reprocessDocument(documentId: string): Promise<LibrarySnapshot>;
     search(query: string): Promise<readonly SearchResult[]>;
+  };
+  readonly memory: {
+    deleteFact(factId: string): Promise<MemoryDeleteFactResult>;
+    getStatus(): Promise<MemoryStatus>;
+    listFacts(): Promise<readonly UserFact[]>;
+    setThreadExclusion(threadId: string, excluded: boolean): Promise<ChatThreadSummary>;
+    updateFact(factId: string, fact: string): Promise<UserFact>;
   };
   readonly models: {
     cancelPull(model: RecommendedModelName): Promise<ModelsCancelPullResult>;

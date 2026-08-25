@@ -32,6 +32,7 @@ interface FolderSectionProps {
   readonly onNewChat: () => void;
   readonly onRename: (name: string) => Promise<string | null>;
   readonly onRenameThread: (threadId: string, title: string) => Promise<string | null>;
+  readonly onSetThreadMemoryExclusion: (threadId: string, excluded: boolean) => void;
   readonly onSelectThread: (threadId: string) => void;
   readonly onToggleCollapsed: () => void;
   readonly selectedThreadId: string | null;
@@ -51,6 +52,7 @@ export function FolderSection({
   onRename,
   onRenameThread,
   onSelectThread,
+  onSetThreadMemoryExclusion,
   onToggleCollapsed,
   selectedThreadId,
   threads,
@@ -212,6 +214,9 @@ export function FolderSection({
                       onRename={(title) => onRenameThread(thread.id, title)}
                       onSelect={() => {
                         onSelectThread(thread.id);
+                      }}
+                      onSetMemoryExclusion={(excluded) => {
+                        onSetThreadMemoryExclusion(thread.id, excluded);
                       }}
                       selected={thread.id === selectedThreadId}
                       thread={thread}

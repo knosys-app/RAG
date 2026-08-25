@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatProgressStatus } from "@knosys-rag/contracts";
-import { BookOpenText, ChevronRight, Quote } from "lucide-react";
+import { BookOpenText, ChevronRight, History, Quote } from "lucide-react";
 import { motion } from "motion/react";
 import { useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import type { Components } from "react-markdown";
@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 interface AnswerContentProps {
   readonly message: ChatMessage;
   readonly onInspectEvidence: (citationId: string) => void;
+  readonly onOpenMemoryThread: (threadId: string) => void;
   readonly streamingStatus: ChatProgressStatus | null;
   readonly streamingText: string | null;
 }
@@ -43,16 +44,19 @@ function BlockMarkers({
   block,
   message,
   onInspectEvidence,
+  onOpenMemoryThread,
 }: {
   readonly block: AnswerBlock;
   readonly message: ChatMessage;
   readonly onInspectEvidence: (citationId: string) => void;
+  readonly onOpenMemoryThread: (threadId: string) => void;
 }): ReactNode {
   const chipIndex = (citationId: string): number =>
     message.citations.findIndex((candidate) => candidate.id === citationId) + 1;
   if (
     block.citations.length === 0 &&
     block.contradicting.length === 0 &&
+    block.memories.length === 0 &&
     block.kind !== "model" &&
     block.kind !== "conflict"
   ) {
@@ -80,6 +84,21 @@ function BlockMarkers({
           variant="contradicting"
         />
       ))}
+      {block.memories.map((memory) => (
+        <button
+          aria-label={`From a past chat: ${memory.threadTitle}, ${memory.threadDate}`}
+          className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 align-super text-[0.65rem] font-medium text-primary hover:bg-primary/20"
+          key={memory.id}
+          onClick={() => {
+            onOpenMemoryThread(memory.threadId);
+          }}
+          title={`From a past chat — ${memory.threadTitle} · ${memory.threadDate}`}
+          type="button"
+        >
+          <History aria-hidden="true" size={11} />
+          {memory.threadTitle}
+        </button>
+      ))}
       {block.kind === "model" ? (
         <span
           aria-label="Model knowledge, not verified by your library"
@@ -105,6 +124,7 @@ function BlockMarkers({
 export function AnswerContent({
   message,
   onInspectEvidence,
+  onOpenMemoryThread,
   streamingStatus,
   streamingText,
 }: AnswerContentProps): ReactNode {
@@ -140,6 +160,7 @@ export function AnswerContent({
   const footer =
     model.hasProvenance &&
     (message.citations.length > 0 ||
+      model.hasMemory ||
       model.hasModelKnowledge ||
       model.fallbackStages.length > 0) ? (
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -161,6 +182,15 @@ export function AnswerContent({
               size={13}
             />
           </button>
+        ) : null}
+        {model.hasMemory ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-primary"
+            title="Parts of this answer come from your past conversations"
+          >
+            <History aria-hidden="true" size={12} />
+            Memory used
+          </span>
         ) : null}
         {model.hasModelKnowledge ? (
           <span className="rounded-md bg-muted px-2 py-1">Includes model knowledge</span>
@@ -201,6 +231,7 @@ export function AnswerContent({
                 block={block}
                 message={message}
                 onInspectEvidence={onInspectEvidence}
+                onOpenMemoryThread={onOpenMemoryThread}
               />
             </div>
           ))}
