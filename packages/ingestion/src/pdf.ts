@@ -15,7 +15,17 @@ type PdfTextItem = {
   readonly height: number;
   readonly str: string;
   readonly transform: readonly unknown[];
+  readonly width?: number;
 };
+
+type PdfMarkedContentItem = {
+  readonly tag?: string | null;
+  readonly type: "beginMarkedContent" | "beginMarkedContentProps" | "endMarkedContent";
+};
+
+// Text smaller than one point is invisible at any reasonable zoom; content
+// hidden that way must not reach the searchable index.
+const TINY_TEXT_MAX_HEIGHT = 1;
 
 type ExtractedPdfPage = {
   readonly lines: readonly string[];
@@ -42,6 +52,15 @@ function isPdfTextItem(value: unknown): value is PdfTextItem {
   return "str" in value && typeof value.str === "string";
 }
 
+function isPdfMarkedContentItem(value: unknown): value is PdfMarkedContentItem {
+  if (typeof value !== "object" || value === null || !("type" in value)) return false;
+  return (
+    value.type === "beginMarkedContent" ||
+    value.type === "beginMarkedContentProps" ||
+    value.type === "endMarkedContent"
+  );
+}
+
 function isUnsafeControlCharacter(value: string): boolean {
   const code = value.charCodeAt(0);
   return code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127;
@@ -51,9 +70,32 @@ function cleanText(value: string): string {
   return [...value].filter((character) => !isUnsafeControlCharacter(character)).join("").replace(/\s+/g, " ");
 }
 
-function itemY(item: PdfTextItem): number | null {
-  const value = item.transform[5];
+function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function itemY(item: PdfTextItem): number | null {
+  return finiteNumber(item.transform[5]);
+}
+
+function isOffPageItem(item: PdfTextItem, pageView: readonly number[] | undefined): boolean {
+  if (pageView === undefined) return false;
+  const [viewLeft, viewBottom, viewRight, viewTop] = pageView;
+  if (
+    viewLeft === undefined ||
+    viewBottom === undefined ||
+    viewRight === undefined ||
+    viewTop === undefined
+  ) {
+    return false;
+  }
+  const left = finiteNumber(item.transform[4]);
+  const bottom = finiteNumber(item.transform[5]);
+  // Without a trustworthy position the item cannot be judged; keep it.
+  if (left === null || bottom === null) return false;
+  const right = left + (finiteNumber(item.width) ?? 0);
+  const top = bottom + (finiteNumber(item.height) ?? 0);
+  return right < viewLeft || left > viewRight || top < viewBottom || bottom > viewTop;
 }
 
 function appendText(line: string, text: string): string {
@@ -66,14 +108,27 @@ function appendText(line: string, text: string): string {
   return `${line} ${cleaned}`;
 }
 
-export function textLines(items: readonly unknown[]): {
+export function textLines(
+  items: readonly unknown[],
+  options: { readonly pageView?: readonly number[] } = {},
+): {
   readonly lines: readonly string[];
+  readonly omittedOffPageItems: number;
+  readonly omittedTinyItems: number;
+  readonly optionalContentTextItems: number;
   readonly replacementCharacters: number;
 } {
   const lines: string[] = [];
   let line = "";
   let previous: PdfTextItem | null = null;
   let replacementCharacters = 0;
+  let omittedOffPageItems = 0;
+  let omittedTinyItems = 0;
+  let optionalContentTextItems = 0;
+  // Marked-content sections nest; the stack records which levels are optional
+  // content ("OC") so text inside hidden layers can at least be counted.
+  const markedContentStack: boolean[] = [];
+  let optionalContentDepth = 0;
 
   const flush = () => {
     const trimmed = line.trim();
@@ -91,7 +146,32 @@ export function textLines(items: readonly unknown[]): {
   };
 
   for (const value of items) {
+    if (isPdfMarkedContentItem(value)) {
+      if (value.type === "endMarkedContent") {
+        if (markedContentStack.length > 0 && markedContentStack.pop() === true) {
+          optionalContentDepth -= 1;
+        }
+      } else {
+        const isOptionalContent = value.tag === "OC";
+        markedContentStack.push(isOptionalContent);
+        if (isOptionalContent) optionalContentDepth += 1;
+      }
+      continue;
+    }
     if (!isPdfTextItem(value)) continue;
+    // Whitespace-only items are exempt from the filters below: they cannot
+    // carry hidden content, and dropping them would lose hasEOL line breaks.
+    if (cleanText(value.str).trim().length > 0) {
+      if (value.height <= TINY_TEXT_MAX_HEIGHT) {
+        omittedTinyItems += 1;
+        continue;
+      }
+      if (isOffPageItem(value, options.pageView)) {
+        omittedOffPageItems += 1;
+        continue;
+      }
+      if (optionalContentDepth > 0) optionalContentTextItems += 1;
+    }
     const currentY = itemY(value);
     const previousY = previous === null ? null : itemY(previous);
     const changedLine =
@@ -105,7 +185,49 @@ export function textLines(items: readonly unknown[]): {
     previous = value;
   }
   flush();
-  return { lines, replacementCharacters };
+  return {
+    lines,
+    omittedOffPageItems,
+    omittedTinyItems,
+    optionalContentTextItems,
+    replacementCharacters,
+  };
+}
+
+function collectLayerIds(order: unknown, ids: Set<string>): void {
+  if (typeof order === "string") {
+    ids.add(order);
+    return;
+  }
+  if (Array.isArray(order)) {
+    for (const entry of order) collectLayerIds(entry, ids);
+    return;
+  }
+  if (typeof order === "object" && order !== null && "order" in order) {
+    collectLayerIds((order as { readonly order: unknown }).order, ids);
+  }
+}
+
+function countHiddenLayers(optionalContentConfig: {
+  getGroup(id: string): unknown;
+  getOrder(): unknown;
+} | null): number {
+  if (optionalContentConfig === null) return 0;
+  const ids = new Set<string>();
+  collectLayerIds(optionalContentConfig.getOrder(), ids);
+  let hidden = 0;
+  for (const id of ids) {
+    const group = optionalContentConfig.getGroup(id);
+    if (
+      typeof group === "object" &&
+      group !== null &&
+      "visible" in group &&
+      group.visible === false
+    ) {
+      hidden += 1;
+    }
+  }
+  return hidden;
 }
 
 function normalizedMarginLine(value: string): string {
@@ -136,7 +258,11 @@ function repeatedMargins(pages: readonly ExtractedPdfPage[]): {
 
 function extractionDiagnostics(options: {
   readonly extractedCharacters: number;
+  readonly hiddenLayerCount: number;
   readonly omittedMarginLines: number;
+  readonly omittedOffPageItems: number;
+  readonly omittedTinyItems: number;
+  readonly optionalContentTextItems: number;
   readonly pages: readonly ExtractedPdfPage[];
   readonly pagesWithoutText: number;
   readonly replacementCharacters: number;
@@ -158,6 +284,37 @@ function extractionDiagnostics(options: {
       message: `${options.omittedMarginLines} repeated header or footer lines were omitted from the index.`,
       severity: "info",
     });
+  }
+  if (options.omittedOffPageItems > 0) {
+    diagnostics.push({
+      code: "PDF_OFFPAGE_TEXT_OMITTED",
+      message: `${options.omittedOffPageItems} text segments positioned entirely outside the page boundaries were omitted from the index.`,
+      severity: "info",
+    });
+  }
+  if (options.omittedTinyItems > 0) {
+    diagnostics.push({
+      code: "PDF_TINY_TEXT_OMITTED",
+      message: `${options.omittedTinyItems} text segments rendered at one point or smaller were omitted from the index.`,
+      severity: "info",
+    });
+  }
+  if (options.optionalContentTextItems > 0) {
+    // Layer visibility cannot be attributed per text item, so hidden-layer
+    // text is surfaced for review instead of being silently dropped.
+    diagnostics.push(
+      options.hiddenLayerCount > 0
+        ? {
+            code: "PDF_OPTIONAL_CONTENT_TEXT",
+            message: `${options.optionalContentTextItems} text segments belong to optional-content layers and ${options.hiddenLayerCount} of the document's layers are hidden by default. Text from hidden layers may be included in the index; review before relying on it.`,
+            severity: "warning",
+          }
+        : {
+            code: "PDF_OPTIONAL_CONTENT_TEXT",
+            message: `${options.optionalContentTextItems} text segments belong to optional-content layers. Layer visibility is not evaluated during extraction.`,
+            severity: "info",
+          },
+    );
   }
 
   const textPages = options.pages.filter((page) => page.lines.length > 0);
@@ -281,19 +438,29 @@ export async function parsePdfBytes(
     let replacementCharacters = 0;
     let textItemCount = 0;
     let pagesWithoutText = 0;
+    let omittedOffPageItems = 0;
+    let omittedTinyItems = 0;
+    let optionalContentTextItems = 0;
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       try {
-        const textContent = await page.getTextContent();
-        textItemCount += textContent.items.length;
+        const textContent = await page.getTextContent({ includeMarkedContent: true });
+        // Marked-content markers are structural, not text; only genuine text
+        // items count toward the complexity limit.
+        for (const item of textContent.items) {
+          if (isPdfTextItem(item)) textItemCount += 1;
+        }
         if (textItemCount > MAX_TEXT_ITEMS) {
           throw new PdfParseError(
             "PDF_TEXT_TOO_COMPLEX",
             "The PDF contains too many individual text elements to index safely.",
           );
         }
-        const extracted = textLines(textContent.items);
+        const extracted = textLines(textContent.items, { pageView: page.view });
+        omittedOffPageItems += extracted.omittedOffPageItems;
+        omittedTinyItems += extracted.omittedTinyItems;
+        optionalContentTextItems += extracted.optionalContentTextItems;
         replacementCharacters += extracted.replacementCharacters;
         extractedCharacters += extracted.lines.reduce((total, line) => total + line.length, 0);
         if (extractedCharacters > MAX_EXTRACTED_CHARACTERS) {
@@ -359,9 +526,17 @@ export async function parsePdfBytes(
     const metadataResult = await pdf.getMetadata().catch(() => null);
     const title = stringProperty(metadataResult?.info, "Title") ?? fallbackTitle(filename);
     const author = stringProperty(metadataResult?.info, "Author");
+    const optionalContentConfig =
+      optionalContentTextItems > 0
+        ? await pdf.getOptionalContentConfig().catch(() => null)
+        : null;
     const diagnostics = extractionDiagnostics({
       extractedCharacters,
+      hiddenLayerCount: countHiddenLayers(optionalContentConfig),
       omittedMarginLines,
+      omittedOffPageItems,
+      omittedTinyItems,
+      optionalContentTextItems,
       pages,
       pagesWithoutText,
       replacementCharacters,

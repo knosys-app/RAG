@@ -328,6 +328,28 @@ importers:
         specifier: ^4.0.15
         version: 4.1.10(@types/node@24.13.3)(jsdom@27.4.0(@noble/hashes@2.3.0))(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.20.6))
 
+  packages/ingestion-eval:
+    dependencies:
+      '@knosys-rag/core':
+        specifier: workspace:*
+        version: link:../core
+      '@knosys-rag/ingestion':
+        specifier: workspace:*
+        version: link:../ingestion
+      '@opendataloader/pdf':
+        specifier: 2.5.3
+        version: 2.5.3
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.13.3
+      tsx:
+        specifier: 4.20.6
+        version: 4.20.6
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/retrieval:
     devDependencies:
       typescript:
@@ -1051,6 +1073,11 @@ packages:
 
   '@nodable/entities@3.0.0':
     resolution: {integrity: sha512-8L9xFeTYKhm49xfIypoe2W5wV1m/3Z58kT+7kR9A8OyFxcPduI4VmxaUMQyKYrRjUoLLSXv6EKKID5Tvj9cUVw==}
+
+  '@opendataloader/pdf@2.5.3':
+    resolution: {integrity: sha512-X79qzp9Ha6oePY0WI8CMqwFm+6n7+7FEwg06E2j3CHpw9xWOqj//sBtjmlw8nr8+T+IsB075rGQJAYTQZ2qB5w==}
+    engines: {node: '>=22.13'}
+    hasBin: true
 
   '@peculiar/asn1-schema@2.8.0':
     resolution: {integrity: sha512-7YT0U/ze0tF2QOBbE15gKZwy5tvgGyLRiRHLzhlbOpf7BT032oBSd0haZqXn5W6l26WLlu3dyxzjM+2638/z2Q==}
@@ -2514,6 +2541,10 @@ packages:
 
   comma-separated-tokens@2.0.3:
     resolution: {integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==}
+
+  commander@15.0.0:
+    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
+    engines: {node: '>=22.12.0'}
 
   commander@5.1.0:
     resolution: {integrity: sha512-P0CysNDQ7rtVw4QIQtm+MRxV66vKFSvlsQvGYXZWR3qFU0jlMKHZZZgw8e+8DSah4UDKMqnknRDQz+xuQXQ/Zg==}
@@ -5049,6 +5080,10 @@ snapshots:
 
   '@nodable/entities@3.0.0': {}
 
+  '@opendataloader/pdf@2.5.3':
+    dependencies:
+      commander: 15.0.0
+
   '@peculiar/asn1-schema@2.8.0':
     dependencies:
       '@peculiar/utils': 2.0.3
@@ -6586,6 +6621,8 @@ snapshots:
       delayed-stream: 1.0.0
 
   comma-separated-tokens@2.0.3: {}
+
+  commander@15.0.0: {}
 
   commander@5.1.0: {}
 

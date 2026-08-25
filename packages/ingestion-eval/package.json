@@ -1,0 +1,20 @@
+{
+  "name": "@knosys-rag/ingestion-eval",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval": "tsx src/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@knosys-rag/core": "workspace:*",
+    "@knosys-rag/ingestion": "workspace:*",
+    "@opendataloader/pdf": "2.5.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
